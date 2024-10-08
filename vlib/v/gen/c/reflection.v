@@ -66,7 +66,7 @@ fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
 	arg_str += '.mod_name=_SLIT("${node.mod}"),'
 	arg_str += '.name=_SLIT("${v_name}"),'
 	arg_str += '.args=${g.gen_functionarg_array(cprefix + 'FunctionArg', node)},'
-	if !node.is_conditional && node.source_fn != 0 && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with(node.mod) {
+	if !node.is_conditional && node.source_fn != 0 && 0 == node.generic_names.len && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with('${node.mod}.') {
 		arg_str += '.fnptr=&${c_fn_name(node.name)},'
 	}
 	arg_str += '.file_idx=${g.reflection_string(util.cescaped_path(node.file))},'
@@ -90,7 +90,12 @@ fn (mut g Gen) gen_reflection_sym(tsym ast.TypeSymbol) string {
 	}
 	info := g.gen_reflection_sym_info(tsym)
 	methods := g.gen_function_array(tsym.methods)
-	return '(${cprefix}TypeSymbol){.name=_SLIT("${tsym.name}"),.idx=${tsym.idx},.parent_idx=${tsym.parent_idx},.language=${cprefix}VLanguage__${tsym.language},.kind=${cprefix}VKind__${kind_name},.info=${info},.methods=${methods}}'
+	mut size_ := 0
+	mut align_ := 0
+	if tsym.idx > 0 {
+		size_,align_ = g.table.type_size(tsym.idx)
+	}
+	return '(${cprefix}TypeSymbol){.name=_SLIT("${tsym.name}"),.idx=${tsym.idx},.parent_idx=${tsym.parent_idx},.size=${size_},.align=${align_},.language=${cprefix}VLanguage__${tsym.language},.kind=${cprefix}VKind__${kind_name},.info=${info},.methods=${methods}}'
 }
 
 // gen_attrs_array generates C code for []Attr

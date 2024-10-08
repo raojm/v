@@ -197,6 +197,8 @@ pub:
 	parent_idx int        // symbol parent idx
 	language   VLanguage  // language
 	kind       VKind      // kind
+	size	   int
+	align      int
 	info       TypeInfo   // info
 	methods    []Function // methods
 }
