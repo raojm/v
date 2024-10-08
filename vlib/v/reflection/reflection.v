@@ -225,6 +225,7 @@ pub:
 	mod_name     string        // module name
 	name         string        // function/method name
 	args         []FunctionArg // function/method args
+	fnptr		 voidptr
 	file_idx     int           // source file name
 	line_start   int           // decl start line
 	line_end     int           // decl end line

@@ -66,6 +66,9 @@ fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
 	arg_str += '.mod_name=_SLIT("${node.mod}"),'
 	arg_str += '.name=_SLIT("${v_name}"),'
 	arg_str += '.args=${g.gen_functionarg_array(cprefix + 'FunctionArg', node)},'
+	if !node.is_conditional && node.source_fn != 0 && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with(node.mod) {
+		arg_str += '.fnptr=&${c_fn_name(node.name)},'
+	}
 	arg_str += '.file_idx=${g.reflection_string(util.cescaped_path(node.file))},'
 	arg_str += '.line_start=${node.pos.line_nr},'
 	arg_str += '.line_end=${node.pos.last_line},'
