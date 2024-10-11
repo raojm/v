@@ -222,11 +222,31 @@ pub:
 	is_mut bool   // is mut?
 }
 
+pub enum FnAttrKind {
+	plain           // [name]
+	string          // ['name']
+	number          // [123]
+	bool            // [true] || [false]
+	comptime_define // [if name]
+}
+
+pub struct FnAttr {
+pub:
+	name    string // [name]
+	has_arg bool
+	arg     string // [name: arg]
+	kind    FnAttrKind
+	ct_opt  bool // true for [if user_defined_name?]
+	// pos     token.Pos
+	has_at  bool // new syntax `@[attr]`
+}
+
 pub struct Function {
 pub:
 	mod_name     string        // module name
 	name         string        // function/method name
 	args         []FunctionArg // function/method args
+	attrs		 []FnAttr
 	fnptr		 voidptr
 	file_idx     int           // source file name
 	line_start   int           // decl start line

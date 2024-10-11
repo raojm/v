@@ -58,6 +58,19 @@ fn (mut g Gen) gen_function_array(nodes []ast.Fn) string {
 	return out
 }
 
+// gen_functionattr_array generates the code for functionarg attr
+@[inline]
+fn (g Gen) gen_functionattr_array(type_name string, node ast.Fn) string {
+	if node.attrs.len == 0 {
+		return g.gen_empty_array(type_name)
+	}
+	mut out := 'new_array_from_c_array(${node.attrs.len},${node.attrs.len},sizeof(${type_name}),'
+	out += '_MOV((${type_name}[${node.attrs.len}]){'
+	out += node.attrs.map('((${type_name}){.name=_SLIT("${it.name}"),.arg=_SLIT("${it.arg}"),.has_arg=${it.has_arg}})').join(',')
+	out += '}))'
+	return out
+}
+
 // gen_reflection_fn generates C code for Function struct
 @[inline]
 fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
@@ -66,6 +79,8 @@ fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
 	arg_str += '.mod_name=_SLIT("${node.mod}"),'
 	arg_str += '.name=_SLIT("${v_name}"),'
 	arg_str += '.args=${g.gen_functionarg_array(cprefix + 'FunctionArg', node)},'
+	arg_str += '.attrs=${g.gen_functionattr_array(cprefix + 'FnAttr', node)},'
+
 	if !node.is_conditional && node.source_fn != 0 && 0 == node.generic_names.len && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with('${node.mod}.') {
 		arg_str += '.fnptr=&${c_fn_name(node.name)},'
 	}
