@@ -197,6 +197,7 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 	mut is_ctor_new := false
 	mut is_c2v_variadic := false
 	mut is_markused := false
+	mut is_expand_simple_interpolation := false
 	mut comments := []ast.Comment{}
 	for fna in p.attrs {
 		match fna.name {
@@ -253,6 +254,9 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 					p.error_with_pos('unsupported calling convention, supported are stdcall, fastcall and cdecl',
 						p.prev_tok.pos())
 				}
+			}
+			'expand_simple_interpolation' {
+				is_expand_simple_interpolation = true
 			}
 			else {}
 		}
@@ -340,14 +344,14 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 		if is_method {
 			mut is_duplicate := type_sym.has_method(name)
 			// make sure this is a normal method and not an interface method
-			if type_sym.kind == .interface_ && is_duplicate {
+			if type_sym.kind == .interface && is_duplicate {
 				if mut type_sym.info is ast.Interface {
 					// if the method is in info then its an interface method
 					is_duplicate = !type_sym.info.has_method(name)
 				}
 			}
 			if is_duplicate {
-				if type_sym.kind == .enum_
+				if type_sym.kind == .enum
 					&& name in ['is_empty', 'has', 'all', 'set', 'set_all', 'clear', 'clear_all', 'toggle', 'zero', 'from'] {
 					if enum_fn := type_sym.find_method(name) {
 						name_pos = enum_fn.name_pos
@@ -550,6 +554,8 @@ run them via `v file.v` instead',
 			pos:      start_pos
 			name_pos: name_pos
 			language: language
+			//
+			is_expand_simple_interpolation: is_expand_simple_interpolation
 		})
 	} else {
 		name = match language {
@@ -603,6 +609,8 @@ run them via `v file.v` instead',
 			pos:      start_pos
 			name_pos: name_pos
 			language: language
+			//
+			is_expand_simple_interpolation: is_expand_simple_interpolation
 		})
 	}
 	/*
@@ -688,6 +696,8 @@ run them via `v file.v` instead',
 		label_names:           p.label_names
 		end_comments:          p.eat_comments(same_line: true)
 		comments:              comments
+		//
+		is_expand_simple_interpolation: is_expand_simple_interpolation
 	}
 	if generic_names.len > 0 {
 		p.table.register_fn_generic_types(fn_decl.fkey())
@@ -756,7 +766,7 @@ fn (mut p Parser) fn_receiver(mut params []ast.Param, mut rec ReceiverParsingInf
 	// optimize method `automatic use fn (a &big_foo) instead of fn (a big_foo)`
 	type_sym := p.table.sym(rec.typ)
 	mut is_auto_rec := false
-	if type_sym.kind == .struct_ {
+	if type_sym.kind == .struct {
 		info := type_sym.info as ast.Struct
 		if !rec.is_mut && !rec.typ.is_ptr() && info.fields.len > 8 {
 			rec.typ = rec.typ.ref()
@@ -978,7 +988,7 @@ fn (mut p Parser) fn_params() ([]ast.Param, bool, bool, bool) {
 					p.error_with_pos('generic object cannot be `atomic`or `shared`', pos)
 					return []ast.Param{}, false, false, false
 				}
-				if param_type.is_ptr() && p.table.sym(param_type).kind == .struct_ {
+				if param_type.is_ptr() && p.table.sym(param_type).kind == .struct {
 					param_type = param_type.ref()
 				} else {
 					param_type = param_type.set_nr_muls(1)
@@ -1107,7 +1117,7 @@ fn (mut p Parser) fn_params() ([]ast.Param, bool, bool, bool) {
 						pos)
 					return []ast.Param{}, false, false, false
 				}
-				if typ.is_ptr() && p.table.sym(typ).kind == .struct_ {
+				if typ.is_ptr() && p.table.sym(typ).kind == .struct {
 					typ = typ.ref()
 				} else {
 					typ = typ.set_nr_muls(1)
@@ -1255,7 +1265,7 @@ fn (mut p Parser) closure_vars() []ast.Param {
 
 fn (mut p Parser) check_fn_mutable_arguments(typ ast.Type, pos token.Pos) {
 	sym := p.table.sym(typ)
-	if sym.kind in [.array, .array_fixed, .interface_, .map, .placeholder, .struct_, .generic_inst,
+	if sym.kind in [.array, .array_fixed, .interface, .map, .placeholder, .struct, .generic_inst,
 		.sum_type] {
 		return
 	}
@@ -1281,7 +1291,7 @@ fn (mut p Parser) check_fn_shared_arguments(typ ast.Type, pos token.Pos) {
 	if sym.kind == .generic_inst {
 		sym = p.table.type_symbols[(sym.info as ast.GenericInst).parent_idx]
 	}
-	if sym.kind !in [.array, .struct_, .map, .placeholder] && !typ.is_ptr() {
+	if sym.kind !in [.array, .struct, .map, .placeholder] && !typ.is_ptr() {
 		p.error_with_pos('shared arguments are only allowed for arrays, maps, and structs\n',
 			pos)
 	}

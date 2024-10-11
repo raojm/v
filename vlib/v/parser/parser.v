@@ -679,17 +679,28 @@ fn (mut p Parser) check_js_name() string {
 	return name
 }
 
+fn is_ident_name(name string) bool {
+	if name.len == 0 || !util.name_char_table[name[0]] {
+		return false
+	}
+	for i in 1 .. name.len {
+		if !util.func_char_table[name[i]] {
+			return false
+		}
+	}
+	return true
+}
+
 fn (mut p Parser) check_name() string {
 	pos := p.tok.pos()
 	name := p.tok.lit
 	if p.tok.kind != .name && p.peek_tok.kind == .dot && name in p.imports {
 		p.register_used_import(name)
 	}
-	match p.tok.kind {
-		.key_struct { p.check(.key_struct) }
-		.key_enum { p.check(.key_enum) }
-		.key_interface { p.check(.key_interface) }
-		else { p.check(.name) }
+	if !is_ident_name(name) {
+		p.check(.name)
+	} else {
+		p.next()
 	}
 	if !p.inside_orm && !p.inside_attr_decl && name == 'sql' {
 		p.error_with_pos('unexpected keyword `sql`, expecting name', pos)
@@ -4310,7 +4321,7 @@ fn (mut p Parser) enum_decl() ast.EnumDecl {
 	}
 
 	idx := p.table.register_sym(ast.TypeSymbol{
-		kind:   .enum_
+		kind:   .enum
 		name:   name
 		cname:  util.no_dots(name)
 		mod:    p.mod
@@ -4417,7 +4428,7 @@ fn (mut p Parser) type_decl() ast.TypeDecl {
 			}
 			variant_sym := p.table.sym(variant.typ)
 			// TODO: implement this check for error too
-			if variant_sym.kind == .none_ {
+			if variant_sym.kind == .none {
 				p.error_with_pos('named sum type cannot have none as its variant', variant.pos)
 				return ast.AliasTypeDecl{}
 			}
