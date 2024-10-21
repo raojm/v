@@ -1,6 +1,8 @@
 # V Documentation
 
 (See https://modules.vlang.io/ for documentation of V's standard library)
+(See also https://docs.vlang.io/introduction.html, which has the same information as this document,
+but split in separate pages for each section, for easier reading on mobile devices)
 
 ## Introduction
 
@@ -219,6 +221,7 @@ by using any of the following commands in a terminal:
 * [Appendices](#appendices)
     * [Keywords](#appendix-i-keywords)
     * [Operators](#appendix-ii-operators)
+    * [Other online resources](#other-online-resources)
 
 </td></tr>
 </table>
@@ -631,6 +634,10 @@ println(country[0]) // Output: 78
 println(country[0].ascii_str()) // Output: N
 ```
 
+If you want the code point from a specific `string` index or other more advanced 
+utf8 processing and conversions, refer to the
+[vlib/encoding.utf8](https://modules.vlang.io/encoding.utf8.html) module.
+
 Both single and double quotes can be used to denote strings. For consistency, `vfmt` converts double
 quotes to single quotes unless the string contains a single quote character.
 
@@ -780,7 +787,7 @@ and related modules [strings](https://modules.vlang.io/strings.html),
 
 ### Runes
 
-A `rune` represents a single Unicode character and is an alias for `u32`.
+A `rune` represents a single UTF-32 encoded Unicode character and is an alias for `u32`.
 To denote them, use <code>`</code> (backticks) :
 
 ```v
@@ -5377,10 +5384,11 @@ V has good support for profiling your programs: `v -profile profile.txt run file
 That will produce a profile.txt file, which you can then analyze.
 
 The generated profile.txt file will have lines with 4 columns:
-a) how many times a function was called
-b) how much time in total a function took (in ms)
-c) how much time on average, a call to a function took (in ns)
-d) the name of the v function
+
+1. How many times a function was called.
+2. How much time in total a function took (in ms).
+3. How much time on average, a call to a function took (in ns).
+4. The name of the v function.
 
 You can sort on column 3 (average time per function) using:
 `sort -n -k3 profile.txt|tail`
@@ -5681,6 +5689,23 @@ pub mut:
 ```
 
 Function/method deprecations:
+
+Functions are deprecated before they are finally removed to give users time to migrate their code. 
+Adding a date is preferable in most cases. An immediate change, without a deprecation date, may be 
+used for functions that are found to be conceptually broken and obsoleted by much better 
+functionality. Other than that setting a date is advisable to grant users a grace period. 
+
+Deprecated functions cause warnings, which cause errors if built with `-prod`. To avoid immediate 
+CI breakage, it is advisable to set a future date, ahead of the date when the code is merged. This 
+gives people who actively developed V projects, the chance to see the deprecation notice at least 
+once and fix the uses. Setting a date in the next 30 days, assumes they would have compiled their 
+projects manually at least once, within that time. For small changes, this should be plenty time. 
+For complex changes, this time may need to be longer. 
+
+Different V projects and maintainers may reasonably choose different deprecation policies. 
+Depending on the type and impact of the change, you may want to consult with them first, before 
+deprecating a function.
+
 
 ```v
 // Calling this function will result in a deprecation warning
@@ -8066,3 +8091,39 @@ Assignment Operators
 >>=  <<=  >>>=
 &&= ||=
 ```
+
+## Other online resources
+
+### [V contributing guide](https://github.com/vlang/v/blob/master/CONTRIBUTING.md)
+
+V would be much less, than what it is today, without the help of all
+its contributors. If you like and want to help the V project succeed,
+please read that document, choose a task, and dive in!
+
+### [V language documentation](https://docs.vlang.io/introduction.html)
+The site has the same information as this document, but split to pages,
+for easier reading on mobile devices. Updated automatically on each
+commit to the main repository.
+
+### [V standard module documentation](https://modules.vlang.io/)
+The site has the documentation of all the modules in V's standard
+library (vlib). Updated automatically on each commit to the main
+repository.
+
+### [V online playground](https://play.vlang.io/)
+The site allows you to enter and edit small V programs, then compile
+and run them. Updated automatically on each commit to the main
+repository. Use it, to test your ideas, when you do not have access
+to a computer or an Android phone, where V has been already installed.
+
+### [Awesome V](https://github.com/vlang/awesome-v)
+When you make a cool new project or a library, you can submit it to that
+list too. You can also use the list, for ideas about new projects to do
+with V.
+
+### [The V language Discord](https://discord.gg/vlang)
+This is the place to be, to discuss the V language, learn about latest
+developments, quickly get help with issues, witness/participate in
+~~epic flame wars~~ constructive criticism exchanges and design decisions.
+Join it, and learn more about languages, games, editors, people, Klingons,
+Conway's law and the universe.

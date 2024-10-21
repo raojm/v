@@ -15,6 +15,13 @@ pub const global_reserved_type_names = ['byte', 'bool', 'char', 'i8', 'i16', 'in
 	'u16', 'u32', 'u64', 'f32', 'f64', 'map', 'string', 'rune', 'usize', 'isize', 'voidptr', 'thread',
 	'array']
 
+pub const result_name = '_result'
+pub const option_name = '_option'
+
+// V builtin types defined on .v files
+pub const builtins = ['string', 'array', 'DenseArray', 'map', 'Error', 'IError', option_name,
+	result_name]
+
 pub type TypeDecl = AliasTypeDecl | FnTypeDecl | SumTypeDecl
 
 // pub const int_type_name = $if amd64 || arm64 {
@@ -279,6 +286,7 @@ pub enum GenericKindField {
 	unknown
 	name
 	typ
+	unaliased_typ
 }
 
 // `foo.bar`
@@ -409,6 +417,7 @@ pub struct StructDecl {
 pub:
 	pos           token.Pos
 	name          string
+	scoped_name   string
 	generic_types []Type
 	is_pub        bool
 	// _pos fields for vfmt
@@ -560,6 +569,7 @@ pub:
 	is_deprecated         bool
 	is_pub                bool
 	is_c_variadic         bool
+	is_c_extern           bool
 	is_variadic           bool
 	is_anon               bool
 	is_noreturn           bool        // true, when @[noreturn] is used on a fn
@@ -705,15 +715,14 @@ fn (f &Fn) method_equals(o &Fn) bool {
 @[minify]
 pub struct Param {
 pub:
-	pos         token.Pos
-	name        string
-	is_mut      bool
-	is_shared   bool
-	is_atomic   bool
-	is_auto_rec bool
-	type_pos    token.Pos
-	is_hidden   bool // interface first arg
-	on_newline  bool // whether the argument starts on a new line
+	pos        token.Pos
+	name       string
+	is_mut     bool
+	is_shared  bool
+	is_atomic  bool
+	type_pos   token.Pos
+	is_hidden  bool // interface first arg
+	on_newline bool // whether the argument starts on a new line
 pub mut:
 	typ Type
 }
@@ -1987,7 +1996,7 @@ pub:
 mut:
 	is_d_resolved bool
 pub mut:
-	vweb_tmpl     File
+	veb_tmpl      File
 	left          Expr
 	left_type     Type
 	result_type   Type
@@ -2080,6 +2089,8 @@ pub mut:
 	sub_structs     map[int]SqlStmtLine
 	where_expr      Expr
 	update_exprs    []Expr // for `update`
+	pre_comments    []Comment
+	end_comments    []Comment
 }
 
 pub struct SqlExpr {

@@ -91,6 +91,7 @@ mut:
 	is_stmt_ident            bool // true while the beginning of a statement is an ident/selector
 	expecting_type           bool // `is Type`, expecting type
 	cur_fn_name              string
+	cur_fn_scope             &ast.Scope = unsafe { nil }
 	label_names              []string
 	name_error               bool // indicates if the token is not a name or the name is on another line
 	n_asm                    int  // controls assembly labels
@@ -679,8 +680,12 @@ fn (mut p Parser) check_js_name() string {
 	return name
 }
 
+@[direct_array_access]
 fn is_ident_name(name string) bool {
-	if name.len == 0 || !util.name_char_table[name[0]] {
+	if name.len == 0 {
+		return false
+	}
+	if !util.name_char_table[name[0]] {
 		return false
 	}
 	for i in 1 .. name.len {
@@ -2322,7 +2327,7 @@ fn (mut p Parser) ident(language ast.Language) ast.Ident {
 	if is_volatile {
 		p.next()
 	}
-	if p.tok.kind != .name {
+	if p.tok.kind !in [.name, .key_type] {
 		if is_mut || is_static || is_volatile {
 			p.error_with_pos('the `${modifier_kind}` keyword is invalid here', mut_pos)
 		} else {
@@ -2588,7 +2593,7 @@ fn (mut p Parser) alias_array_type() ast.Type {
 		if idx == 0 {
 			return ast.void_type
 		}
-		sym := p.table.sym(idx)
+		sym := p.table.sym(ast.idx_to_type(idx))
 		if sym.info is ast.Alias {
 			if sym.info.parent_type == 0 {
 				return ast.void_type
@@ -2617,7 +2622,7 @@ fn (mut p Parser) name_expr() ast.Expr {
 		is_known_var := p.scope.known_var(p.tok.lit)
 		if is_known_var {
 			p.mark_var_as_used(p.tok.lit)
-			return p.ident(ast.Language.v)
+			return p.ident(.v)
 		} else {
 			type_pos := p.tok.pos()
 			typ := p.parse_type()
@@ -2931,6 +2936,7 @@ fn (mut p Parser) name_expr() ast.Expr {
 			fkind := match field {
 				'name' { ast.GenericKindField.name }
 				'typ' { ast.GenericKindField.typ }
+				'unaliased_typ' { ast.GenericKindField.unaliased_typ }
 				else { ast.GenericKindField.unknown }
 			}
 			pos.extend(p.tok.pos())
@@ -3492,7 +3498,7 @@ fn (mut p Parser) parse_concrete_types() []ast.Type {
 }
 
 // is_generic_name returns true if the current token is a generic name.
-fn (p Parser) is_generic_name() bool {
+fn (p &Parser) is_generic_name() bool {
 	return p.tok.kind == .name && util.is_generic_type_name(p.tok.lit)
 }
 
@@ -4236,7 +4242,7 @@ fn (mut p Parser) enum_decl() ast.EnumDecl {
 	p.check(.rcbr)
 	is_flag := p.attrs.contains('flag')
 	is_multi_allowed := p.attrs.contains('_allow_multiple_values')
-	pubfn := if p.mod == 'main' { 'fn' } else { 'pub fn' }
+	pubfn := if p.mod == 'main' { '@[flag_enum_fn] fn' } else { '@[flag_enum_fn] pub fn' }
 	if is_flag {
 		if fields.len > 64 {
 			p.error('when an enum is used as bit field, it must have a max of 64 fields')
@@ -4312,12 +4318,7 @@ fn (mut p Parser) enum_decl() ast.EnumDecl {
 		}
 	}
 	if enum_name[0].is_capital() && fields.len > 0 {
-		// TODO: this check is to prevent avoidable later stage checker errors for generated code,
-		// since currently there is no way to show the proper source context :-|.
-		if p.pref.backend == .c {
-			// TODO: improve the other backends, to the point where they can handle generics or comptime checks too
-			p.codegen(code_for_from_fn)
-		}
+		p.codegen(code_for_from_fn)
 	}
 
 	idx := p.table.register_sym(ast.TypeSymbol{

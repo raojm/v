@@ -324,7 +324,7 @@ fn (mut p Parser) comptime_call() ast.ComptimeCall {
 		scope:       unsafe { nil }
 		is_vweb:     true
 		is_veb:      is_veb
-		vweb_tmpl:   file
+		veb_tmpl:    file
 		method_name: method_name
 		args_var:    literal_string_param
 		args:        [arg]
@@ -366,7 +366,7 @@ fn (mut p Parser) comptime_for() ast.ComptimeFor {
 		'params' {
 			p.scope.register(ast.Var{
 				name: val_var
-				typ:  p.table.find_type_idx('MethodParam')
+				typ:  p.table.find_type('MethodParam')
 				pos:  var_pos
 			})
 			kind = .params
@@ -374,14 +374,14 @@ fn (mut p Parser) comptime_for() ast.ComptimeFor {
 		'methods' {
 			p.scope.register(ast.Var{
 				name: val_var
-				typ:  p.table.find_type_idx('FunctionData')
+				typ:  p.table.find_type('FunctionData')
 				pos:  var_pos
 			})
 		}
 		'values' {
 			p.scope.register(ast.Var{
 				name: val_var
-				typ:  p.table.find_type_idx('EnumData')
+				typ:  p.table.find_type('EnumData')
 				pos:  var_pos
 			})
 			kind = .values
@@ -389,7 +389,7 @@ fn (mut p Parser) comptime_for() ast.ComptimeFor {
 		'fields' {
 			p.scope.register(ast.Var{
 				name: val_var
-				typ:  p.table.find_type_idx('FieldData')
+				typ:  p.table.find_type('FieldData')
 				pos:  var_pos
 			})
 			kind = .fields
@@ -397,7 +397,7 @@ fn (mut p Parser) comptime_for() ast.ComptimeFor {
 		'variants' {
 			p.scope.register(ast.Var{
 				name: val_var
-				typ:  p.table.find_type_idx('VariantData')
+				typ:  p.table.find_type('VariantData')
 				pos:  var_pos
 			})
 			kind = .variants
@@ -405,7 +405,7 @@ fn (mut p Parser) comptime_for() ast.ComptimeFor {
 		'attributes' {
 			p.scope.register(ast.Var{
 				name: val_var
-				typ:  p.table.find_type_idx('VAttribute')
+				typ:  p.table.find_type('VAttribute')
 				pos:  var_pos
 			})
 			kind = .attributes

@@ -108,6 +108,7 @@ pub mut:
 	generic_types []Type
 	mod           string
 	is_pub        bool
+	is_builtin    bool
 	language      Language
 	idx           int
 	size          int = -1
@@ -158,9 +159,8 @@ pub mut:
 @[minify]
 pub struct Struct {
 pub:
-	attrs    []Attr
-	scope    &Scope = unsafe { nil }
-	is_local bool
+	attrs       []Attr
+	scoped_name string
 pub mut:
 	embeds         []Type
 	fields         []StructField
@@ -170,6 +170,7 @@ pub mut:
 	is_minify      bool
 	is_anon        bool
 	is_generic     bool
+	has_option     bool // contains any option field
 	generic_types  []Type
 	concrete_types []Type
 	parent_type    Type
@@ -416,8 +417,26 @@ pub fn (t Type) has_option_or_result() bool {
 	return t & 0x0300_0000 != 0
 }
 
+@[inline]
+pub fn (ts &TypeSymbol) scoped_name() string {
+	return if ts.info is Struct && ts.info.scoped_name != '' {
+		ts.info.scoped_name
+	} else {
+		ts.name
+	}
+}
+
+@[inline]
+pub fn (ts &TypeSymbol) scoped_cname() string {
+	return if ts.info is Struct && ts.info.scoped_name != '' {
+		ts.info.scoped_name.replace('.', '__')
+	} else {
+		ts.cname
+	}
+}
+
 // debug returns a verbose representation of the information in ts, useful for tracing/debugging
-pub fn (ts TypeSymbol) debug() []string {
+pub fn (ts &TypeSymbol) debug() []string {
 	mut res := []string{}
 	ts.dbg_common(mut res)
 	res << 'info: ${ts.info}'
@@ -426,13 +445,13 @@ pub fn (ts TypeSymbol) debug() []string {
 }
 
 // same as .debug(), but without the verbose .info and .methods fields
-pub fn (ts TypeSymbol) dbg() []string {
+pub fn (ts &TypeSymbol) dbg() []string {
 	mut res := []string{}
 	ts.dbg_common(mut res)
 	return res
 }
 
-fn (ts TypeSymbol) dbg_common(mut res []string) {
+fn (ts &TypeSymbol) dbg_common(mut res []string) {
 	res << 'idx: 0x${ts.idx.hex()}'
 	res << 'parent_idx: 0x${ts.parent_idx.hex()}'
 	res << 'mod: ${ts.mod}'
@@ -443,7 +462,7 @@ fn (ts TypeSymbol) dbg_common(mut res []string) {
 	res << 'language: ${ts.language}'
 }
 
-pub fn (ts TypeSymbol) nr_dims() int {
+pub fn (ts &TypeSymbol) nr_dims() int {
 	match ts.info {
 		Alias {
 			parent_sym := global_table.sym(ts.info.parent_type)
@@ -511,6 +530,12 @@ pub fn (t Type) derive(t_from Type) Type {
 @[inline]
 pub fn (t Type) derive_add_muls(t_from Type) Type {
 	return Type((0xff000000 & t_from) | u16(t)).set_nr_muls(t.nr_muls() + t_from.nr_muls())
+}
+
+// return new type from its `idx`
+@[inline]
+pub fn (t Type) idx_type() Type {
+	return idx_to_type(t.idx())
 }
 
 // return new type with TypeSymbol idx set to `idx`
@@ -814,7 +839,7 @@ pub enum Kind {
 }
 
 // str returns the internal & source name of the type
-pub fn (t TypeSymbol) str() string {
+pub fn (t &TypeSymbol) str() string {
 	return t.name
 }
 
@@ -1035,10 +1060,10 @@ pub fn (mut t Table) register_builtin_type_symbols() {
 	t.register_sym(kind: .char, name: 'char', cname: 'char', mod: 'builtin') // 18
 	t.register_sym(kind: .bool, name: 'bool', cname: 'bool', mod: 'builtin') // 19
 	t.register_sym(kind: .none, name: 'none', cname: 'none', mod: 'builtin') // 20
-	t.register_sym(kind: .string, name: 'string', cname: 'string', mod: 'builtin') // 21
+	t.register_sym(kind: .string, name: 'string', cname: 'string', mod: 'builtin', is_builtin: true) // 21
 	t.register_sym(kind: .rune, name: 'rune', cname: 'rune', mod: 'builtin') // 22
-	t.register_sym(kind: .array, name: 'array', cname: 'array', mod: 'builtin') // 23
-	t.register_sym(kind: .map, name: 'map', cname: 'map', mod: 'builtin') // 24
+	t.register_sym(kind: .array, name: 'array', cname: 'array', mod: 'builtin', is_builtin: true) // 23
+	t.register_sym(kind: .map, name: 'map', cname: 'map', mod: 'builtin', is_builtin: true) // 24
 	t.register_sym(kind: .chan, name: 'chan', cname: 'chan', mod: 'builtin') // 25
 	t.register_sym(kind: .any, name: 'any', cname: 'any', mod: 'builtin') // 26
 	t.register_sym(
@@ -1062,7 +1087,13 @@ pub fn (mut t Table) register_builtin_type_symbols() {
 			return_type: void_type
 		}
 	) // 29
-	t.register_sym(kind: .interface, name: 'IError', cname: 'IError', mod: 'builtin') // 30
+	t.register_sym(
+		kind:       .interface
+		name:       'IError'
+		cname:      'IError'
+		mod:        'builtin'
+		is_builtin: true
+	) // 30
 	t.register_sym(kind: .voidptr, name: 'nil', cname: 'voidptr', mod: 'builtin') // 31
 }
 
@@ -1533,7 +1564,7 @@ pub fn (t &Table) type_to_str_using_aliases(typ Type, import_aliases map[string]
 	return res
 }
 
-fn (t Table) shorten_user_defined_typenames(original_name string, import_aliases map[string]string) string {
+fn (t &Table) shorten_user_defined_typenames(original_name string, import_aliases map[string]string) string {
 	if alias := import_aliases[original_name] {
 		return alias
 	}
@@ -1587,7 +1618,7 @@ pub fn (t &Table) fn_signature_using_aliases(func &Fn, import_aliases map[string
 		sb.write_string(func.name)
 	}
 	sb.write_string('(')
-	start := int(opts.skip_receiver)
+	start := int(func.is_method && opts.skip_receiver)
 	for i in start .. func.params.len {
 		if i != start {
 			sb.write_string(', ')

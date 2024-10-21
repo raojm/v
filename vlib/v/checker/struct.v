@@ -11,7 +11,12 @@ fn (mut c Checker) struct_decl(mut node ast.StructDecl) {
 	defer {
 		util.timing_measure_cumulative(@METHOD)
 	}
-	mut struct_sym, struct_typ_idx := c.table.find_sym_and_type_idx(node.name)
+	if node.language in [.c, .js] && node.generic_types.len > 0 {
+		lang := if node.language == .c { 'C' } else { 'JS' }
+		c.error('${lang} structs cannot be declared as generic', node.pos)
+	}
+	node_name := if node.scoped_name != '' { node.scoped_name } else { node.name }
+	mut struct_sym, struct_typ_idx := c.table.find_sym_and_type_idx(node_name)
 	mut has_generic_types := false
 	if mut struct_sym.info is ast.Struct {
 		for mut symfield in struct_sym.info.fields {
@@ -336,7 +341,7 @@ fn (mut c Checker) struct_decl(mut node ast.StructDecl) {
 	if node.is_implements {
 		// XTODO2
 		// cgen error if I use `println(sym)` without handling the option with `or{}`
-		struct_type := c.table.find_type_idx(node.name) // or { panic(err) }
+		struct_type := c.table.find_type(node.name) // or { panic(err) }
 		mut names_used := []string{}
 		for t in node.implements_types {
 			t_sym := c.table.sym(t.typ)
@@ -441,11 +446,6 @@ fn (mut c Checker) struct_init(mut node ast.StructInit, is_field_zero_struct_ini
 	mut old_cur_struct_generic_types := []ast.Type{}
 	mut old_cur_struct_concrete_types := []ast.Type{}
 	if struct_sym.info is ast.Struct {
-		if struct_sym.info.is_local && struct_sym.info.scope != unsafe { nil }
-			&& !struct_sym.info.scope.contains(node.pos.pos) {
-			c.error('struct `${struct_sym.name}` was declared in a local scope outside current scope',
-				node.pos)
-		}
 		// check if the generic param types have been defined
 		for ct in struct_sym.info.concrete_types {
 			ct_sym := c.table.sym(ct)
@@ -935,7 +935,7 @@ fn (mut c Checker) check_uninitialized_struct_fields_and_embeds(node ast.StructI
 		if field.has_default_expr {
 			if i < info.fields.len && field.default_expr_typ == 0 {
 				if mut field.default_expr is ast.StructInit {
-					idx := c.table.find_type_idx(field.default_expr.typ_str)
+					idx := c.table.find_type(field.default_expr.typ_str)
 					if idx != 0 {
 						info.fields[i].default_expr_typ = ast.new_type(idx)
 					}

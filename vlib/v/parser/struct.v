@@ -97,6 +97,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 	mut implements_types := []ast.TypeNode{cap: 3} // ast.void_type
 	mut last_line := p.prev_tok.pos().line_nr + 1
 	mut end_comments := []ast.Comment{}
+	mut has_option := false
 	if !no_body {
 		if p.tok.kind == .key_implements {
 			is_implements = true
@@ -253,6 +254,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 				field_pos = field_start_pos.extend(p.prev_tok.pos())
 				if typ.has_option_or_result() {
 					option_pos = p.peek_token(-2).pos()
+					has_option = true
 				}
 			}
 			// Comments after type (same line)
@@ -352,14 +354,16 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 		p.check(.rcbr)
 		end_comments = p.eat_comments(same_line: true)
 	}
+	scoped_name := if !is_anon && p.inside_fn { '_${name}_${p.cur_fn_scope.start_pos}' } else { '' }
 	is_minify := attrs.contains('minify')
 	mut sym := ast.TypeSymbol{
-		kind:     .struct
-		language: language
-		name:     name
-		cname:    util.no_dots(name)
-		mod:      p.mod
-		info:     ast.Struct{
+		kind:       .struct
+		language:   language
+		name:       name
+		cname:      util.no_dots(name)
+		mod:        p.mod
+		info:       ast.Struct{
+			scoped_name:   scoped_name
 			embeds:        embed_types
 			fields:        fields
 			is_typedef:    attrs.contains('typedef')
@@ -370,10 +374,10 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 			generic_types: generic_types
 			attrs:         attrs
 			is_anon:       is_anon
-			is_local:      p.inside_fn
-			scope:         p.scope
+			has_option:    has_option
 		}
-		is_pub:   is_pub
+		is_pub:     is_pub
+		is_builtin: name in ast.builtins
 	}
 	if p.table.has_deep_child_no_ref(&sym, name) {
 		p.error_with_pos('invalid recursive struct `${orig_name}`', name_pos)
@@ -392,6 +396,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 	p.expr_mod = ''
 	return ast.StructDecl{
 		name:             name
+		scoped_name:      scoped_name
 		is_pub:           is_pub
 		fields:           ast_fields
 		pos:              start_pos.extend_with_last_line(name_pos, last_line)

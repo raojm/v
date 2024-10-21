@@ -666,7 +666,7 @@ fn (mut c Amd64) mov_reg_to_var(var Var, r Register, config VarConfig) {
 						size_str = 'BYTE'
 					}
 					else {
-						ts := c.g.table.sym(typ.idx())
+						ts := c.g.table.sym(typ.idx_type())
 						if ts.info is ast.Enum {
 							if is_extended_register {
 								c.g.write8(0x44)
@@ -3082,6 +3082,10 @@ fn (mut c Amd64) infloop() {
 }
 
 fn (mut c Amd64) fn_decl(node ast.FnDecl) {
+	if node.attrs.contains('flag_enum_fn') {
+		// TODO: remove, when the native backend can process all flagged enum generated functions
+		return
+	}
 	c.push(Amd64Register.rbp)
 	c.mov_reg(Amd64Register.rbp, Amd64Register.rsp)
 	local_alloc_pos := c.g.pos()

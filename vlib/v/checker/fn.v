@@ -13,9 +13,13 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 			eprintln('>>> post processing node.name: ${node.name:-30} | ${node.generic_names} <=> ${c.table.cur_concrete_types}')
 		}
 	}
+	if node.language in [.c, .js] && node.generic_names.len > 0 {
+		lang := if node.language == .c { 'C' } else { 'JS' }
+		c.error('${lang} functions cannot be declared as generic', node.pos)
+	}
 	// record the veb route methods (public non-generic methods):
 	if node.generic_names.len > 0 && node.is_pub {
-		typ_vweb_result := c.table.find_type_idx('veb.Result')
+		typ_vweb_result := c.table.find_type('veb.Result')
 		if node.return_type == typ_vweb_result {
 			rec_sym := c.table.sym(node.receiver.typ)
 			if rec_sym.kind == .struct {
@@ -448,15 +452,15 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 	}
 	c.fn_scope = node.scope
 	// Register implicit context var
-	typ_veb_result := c.table.get_veb_result_type_idx() // c.table.find_type_idx('veb.Result')
+	typ_veb_result := c.table.get_veb_result_type_idx() // c.table.find_type('veb.Result')
 	if node.return_type == typ_veb_result {
 		// Find a custom user Context type first
-		mut ctx_idx := c.table.find_type_idx('main.Context')
+		mut ctx_idx := c.table.find_type('main.Context')
 		if ctx_idx < 1 {
 			// If it doesn't exist, use veb.Context
-			ctx_idx = c.table.find_type_idx('veb.Context')
+			ctx_idx = c.table.find_type('veb.Context')
 		}
-		typ_veb_context := ast.Type(u32(ctx_idx)).set_nr_muls(1)
+		typ_veb_context := ctx_idx.set_nr_muls(1)
 		// No `ctx` param? Add it
 		if !node.params.any(it.name == 'ctx') && node.params.len >= 1 {
 			params := node.params.clone()
@@ -564,7 +568,7 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 // check_same_type_ignoring_pointers util function to check if the Types are the same, including all
 // corner cases.
 // FIXME: if the optimization is done after the checker, we can safely remove this util function
-fn (c Checker) check_same_type_ignoring_pointers(type_a ast.Type, type_b ast.Type) bool {
+fn (c &Checker) check_same_type_ignoring_pointers(type_a ast.Type, type_b ast.Type) bool {
 	// FIXME: if possible pass the ast.Node and check the property `is_auto_rec`
 	if type_a != type_b {
 		// before failing we must be sure that the parser didn't optimize the function
@@ -793,6 +797,8 @@ fn (mut c Checker) needs_unwrap_generic_type(typ ast.Type) bool {
 }
 
 fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.Type {
+	is_va_arg := node.name == 'C.va_arg'
+	is_json_decode := node.name == 'json.decode'
 	mut fn_name := node.name
 	if index := node.name.index('__static__') {
 		// resolve static call T.name()
@@ -870,10 +876,15 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 	} else if node.args.len > 0 && node.args[0].typ.has_flag(.shared_f) && fn_name == 'json.encode' {
 		c.error('json.encode cannot handle shared data', node.pos)
 		return ast.void_type
-	} else if node.args.len > 0 && fn_name == 'json.decode' {
+	} else if node.args.len > 0 && (is_va_arg || is_json_decode) {
 		if node.args.len != 2 {
-			c.error("json.decode expects 2 arguments, a type and a string (e.g `json.decode(T, '')`)",
-				node.pos)
+			if is_json_decode {
+				c.error("json.decode expects 2 arguments, a type and a string (e.g `json.decode(T, '')`)",
+					node.pos)
+			} else {
+				c.error('C.va_arg expects 2 arguments, a type and va_list (e.g `C.va_arg(int, va)`)',
+					node.pos)
+			}
 			return ast.void_type
 		}
 		mut expr := node.args[0].expr
@@ -890,27 +901,26 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 				if sym.info is ast.Alias {
 					kind = c.table.sym(sym.info.parent_type).kind
 				}
-				if kind !in [.struct, .sum_type, .map, .array] {
-					c.error('json.decode: expected sum type, struct, map or array, found ${kind}',
+				if is_json_decode && kind !in [.struct, .sum_type, .map, .array] {
+					c.error('${fn_name}: expected sum type, struct, map or array, found ${kind}',
 						expr.pos)
 				}
 			} else {
-				c.error('json.decode: unknown type `${sym.name}`', node.pos)
+				c.error('${fn_name}: unknown type `${sym.name}`', node.pos)
 			}
 		} else {
 			typ := expr.type_name()
-			c.error('json.decode: first argument needs to be a type, got `${typ}`', node.pos)
+			c.error('${fn_name}: first argument needs to be a type, got `${typ}`', node.pos)
 			return ast.void_type
 		}
 		c.expected_type = ast.string_type
 		node.args[1].typ = c.expr(mut node.args[1].expr)
-		if node.args[1].typ != ast.string_type {
+		if is_json_decode && node.args[1].typ != ast.string_type {
 			c.error('json.decode: second argument needs to be a string', node.pos)
 		}
 		typ := expr as ast.TypeNode
-		ret_type := typ.typ.set_flag(.result)
-		node.return_type = ret_type
-		return ret_type
+		node.return_type = if is_json_decode { typ.typ.set_flag(.result) } else { typ.typ }
+		return node.return_type
 	} else if fn_name == '__addr' {
 		if !c.inside_unsafe {
 			c.error('`__addr` must be called from an unsafe block', node.pos)
@@ -2054,6 +2064,9 @@ fn (mut c Checker) method_call(mut node ast.CallExpr) ast.Type {
 	if final_left_sym.kind == .array && array_builtin_methods_chk.matches(method_name)
 		&& !(left_sym.kind == .alias && left_sym.has_method(method_name)) {
 		return c.array_builtin_method_call(mut node, left_type)
+	} else if final_left_sym.kind == .array_fixed && method_name in ['index', 'all', 'any', 'map']
+		&& !(left_sym.kind == .alias && left_sym.has_method(method_name)) {
+		return c.fixed_array_builtin_method_call(mut node, left_type)
 	} else if final_left_sym.kind == .map
 		&& method_name in ['clone', 'keys', 'values', 'move', 'delete'] && !(left_sym.kind == .alias
 		&& left_sym.has_method(method_name)) {
@@ -3286,6 +3299,7 @@ fn (mut c Checker) array_builtin_method_call(mut node ast.CallExpr, left_type as
 			if mut node.args[0].expr is ast.LambdaExpr {
 				c.support_lambda_expr_in_sort(elem_typ.ref(), ast.bool_type, mut node.args[0].expr)
 			} else if node.args[0].expr is ast.InfixExpr {
+				c.check_sort_external_variable_access(node.args[0].expr)
 				if node.args[0].expr.op !in [.gt, .lt] {
 					c.error('`.${method_name}()` can only use `<` or `>` comparison',
 						node.pos)
@@ -3451,6 +3465,34 @@ fn (mut c Checker) array_builtin_method_call(mut node ast.CallExpr, left_type as
 			}
 		}
 		node.return_type = ast.void_type
+	}
+	return node.return_type
+}
+
+fn (mut c Checker) fixed_array_builtin_method_call(mut node ast.CallExpr, left_type ast.Type) ast.Type {
+	left_sym := c.table.final_sym(left_type)
+	method_name := node.name
+	unwrapped_left_type := c.unwrap_generic(left_type)
+	unaliased_left_type := c.table.unaliased_type(unwrapped_left_type)
+	array_info := if left_sym.info is ast.ArrayFixed {
+		left_sym.info as ast.ArrayFixed
+	} else {
+		c.table.sym(unaliased_left_type).info as ast.ArrayFixed
+	}
+	elem_typ := array_info.elem_type
+	if method_name == 'index' {
+		if node.args.len != 1 {
+			c.error('`.index()` expected 1 argument, but got ${node.args.len}', node.pos)
+		} else if !left_sym.has_method('index') {
+			arg_typ := c.expr(mut node.args[0].expr)
+			c.check_expected_call_arg(arg_typ, elem_typ, node.language, node.args[0]) or {
+				c.error('${err.msg()} in argument 1 to `.index()`', node.args[0].pos)
+			}
+		}
+		for i, mut arg in node.args {
+			node.args[i].typ = c.expr(mut arg.expr)
+		}
+		node.return_type = ast.int_type
 	}
 	return node.return_type
 }

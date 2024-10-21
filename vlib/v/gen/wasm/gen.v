@@ -102,7 +102,7 @@ pub fn (mut g Gen) w_error(s string) {
 	util.verror('wasm error', s)
 }
 
-pub fn (g Gen) unpack_type(typ ast.Type) []ast.Type {
+pub fn (g &Gen) unpack_type(typ ast.Type) []ast.Type {
 	ts := g.table.sym(typ)
 	return match ts.info {
 		ast.MultiReturn {
@@ -114,7 +114,7 @@ pub fn (g Gen) unpack_type(typ ast.Type) []ast.Type {
 	}
 }
 
-pub fn (g Gen) is_param_type(typ ast.Type) bool {
+pub fn (g &Gen) is_param_type(typ ast.Type) bool {
 	return !typ.is_ptr() && !g.is_pure_type(typ)
 }
 
@@ -176,6 +176,11 @@ pub fn (mut g Gen) fn_external_import(node ast.FnDecl) {
 pub fn (mut g Gen) fn_decl(node ast.FnDecl) {
 	if node.language in [.js, .wasm] {
 		g.fn_external_import(node)
+		return
+	}
+
+	if node.attrs.contains('flag_enum_fn') {
+		// TODO: remove, when support for fn results is done
 		return
 	}
 

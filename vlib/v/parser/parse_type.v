@@ -176,7 +176,7 @@ fn (mut p Parser) parse_map_type() ast.Type {
 		return 0
 	}
 	if value_type.idx() == ast.void_type_idx {
-		p.error_with_pos('map value type cannot be void', p.tok.pos())
+		p.error_with_pos('map value type is missing: use `map[KeyType]ValueType`', p.tok.pos())
 		return 0
 	}
 	idx := p.table.find_or_register_map(key_type, value_type)
@@ -797,7 +797,7 @@ fn (mut p Parser) parse_any_type(language ast.Language, is_ptr bool, check_dot b
 
 fn (mut p Parser) find_type_or_add_placeholder(name string, language ast.Language) ast.Type {
 	// struct / enum / placeholder
-	mut idx := p.table.find_type_idx(name)
+	mut idx := p.table.find_type_idx_fn_scoped(name, p.cur_fn_scope)
 	if idx > 0 {
 		mut typ := ast.new_type(idx)
 		sym := p.table.sym(typ)

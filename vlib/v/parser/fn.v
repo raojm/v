@@ -32,7 +32,7 @@ fn (mut p Parser) call_expr(language ast.Language, mod string) ast.CallExpr {
 		p.check_for_impure_v(language, first_pos)
 	}
 	mut or_kind := ast.OrKind.absent
-	if fn_name == 'json.decode' {
+	if fn_name == 'json.decode' || fn_name == 'C.va_arg' {
 		p.expecting_type = true // Makes name_expr() parse the type `User` in `json.decode(User, txt)`
 	}
 
@@ -196,6 +196,7 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 	mut is_noreturn := false
 	mut is_ctor_new := false
 	mut is_c2v_variadic := false
+	mut is_c_extern := false
 	mut is_markused := false
 	mut is_expand_simple_interpolation := false
 	mut comments := []ast.Comment{}
@@ -236,6 +237,9 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 			}
 			'markused' {
 				is_markused = true
+			}
+			'c_extern' {
+				is_c_extern = true
 			}
 			'windows_stdcall' {
 				p.note_with_pos('the tag [windows_stdcall] has been deprecated, it will be an error after 2022-06-01, use `[callconv: stdcall]` instead',
@@ -449,7 +453,7 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 				name:          param.name
 				typ:           param.typ
 				is_mut:        param.is_mut
-				is_auto_deref: param.is_mut || param.is_auto_rec
+				is_auto_deref: param.is_mut
 				is_stack_obj:  is_stack_obj
 				pos:           param.pos
 				is_used:       true
@@ -631,9 +635,12 @@ run them via `v file.v` instead',
 		if language != .v && !(language == .js && type_sym.info is ast.Interface) {
 			p.error_with_pos('interop functions cannot have a body', body_start_pos)
 		}
+		last_fn_scope := p.scope
 		p.inside_fn = true
 		p.inside_unsafe_fn = is_unsafe
+		p.cur_fn_scope = p.scope
 		stmts = p.parse_block_no_scope(true)
+		p.cur_fn_scope = last_fn_scope
 		p.inside_unsafe_fn = false
 		p.inside_fn = false
 	}
@@ -662,6 +669,7 @@ run them via `v file.v` instead',
 		is_pub:             is_pub
 		is_variadic:        is_variadic
 		is_c_variadic:      is_c_variadic
+		is_c_extern:        is_c_extern
 		is_main:            is_main
 		is_test:            is_test
 		is_keep_alive:      is_keep_alive
@@ -763,16 +771,6 @@ fn (mut p Parser) fn_receiver(mut params []ast.Param, mut rec ReceiverParsingInf
 	if is_atomic {
 		rec.typ = rec.typ.set_flag(.atomic_f)
 	}
-	// optimize method `automatic use fn (a &big_foo) instead of fn (a big_foo)`
-	type_sym := p.table.sym(rec.typ)
-	mut is_auto_rec := false
-	if type_sym.kind == .struct {
-		info := type_sym.info as ast.Struct
-		if !rec.is_mut && !rec.typ.is_ptr() && info.fields.len > 8 {
-			rec.typ = rec.typ.ref()
-			is_auto_rec = true
-		}
-	}
 
 	if rec.language != .v {
 		p.check_for_impure_v(rec.language, rec.type_pos)
@@ -780,22 +778,14 @@ fn (mut p Parser) fn_receiver(mut params []ast.Param, mut rec ReceiverParsingInf
 
 	p.check(.rpar)
 
-	if is_auto_rec && p.tok.kind != .name {
-		// Disable the auto-reference conversion for methodlike operators like ==, <=, > etc,
-		// since their parameters and receivers, *must* always be of the same type.
-		is_auto_rec = false
-		rec.typ = rec.typ.deref()
-	}
-
 	params << ast.Param{
-		pos:         rec_start_pos
-		name:        rec.name
-		is_mut:      rec.is_mut
-		is_atomic:   is_atomic
-		is_shared:   is_shared
-		is_auto_rec: is_auto_rec
-		typ:         rec.typ
-		type_pos:    rec.type_pos
+		pos:       rec_start_pos
+		name:      rec.name
+		is_mut:    rec.is_mut
+		is_atomic: is_atomic
+		is_shared: is_shared
+		typ:       rec.typ
+		type_pos:  rec.type_pos
 	}
 }
 
@@ -838,7 +828,7 @@ fn (mut p Parser) anon_fn() ast.AnonFn {
 			name:          param.name
 			typ:           param.typ
 			is_mut:        param.is_mut
-			is_auto_deref: param.is_mut || param.is_auto_rec
+			is_auto_deref: param.is_mut
 			pos:           param.pos
 			is_used:       true
 			is_arg:        true

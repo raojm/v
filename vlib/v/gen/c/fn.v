@@ -10,6 +10,9 @@ import v.util
 const c_fn_name_escape_seq = ['[', '_T_', ']', '']
 
 fn (mut g Gen) is_used_by_main(node ast.FnDecl) bool {
+	if node.is_c_extern {
+		return true
+	}
 	mut is_used_by_main := true
 	if g.pref.skip_unused {
 		fkey := node.fkey()
@@ -71,7 +74,7 @@ fn (mut g Gen) fn_decl(node ast.FnDecl) {
 	defer {
 		g.inside_c_extern = old_inside_c_extern
 	}
-	if node.language == .c && node.attrs.contains('c_extern') {
+	if node.language == .c && node.is_c_extern {
 		g.inside_c_extern = true
 	}
 
@@ -238,7 +241,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 	}
 
 	mut name := g.c_fn_name(node)
-	type_name := g.ret_typ(g.unwrap_generic(node.return_type))
+	type_name := g.ret_styp(g.unwrap_generic(node.return_type))
 	if g.pref.obfuscate && g.cur_mod.name == 'main' && name.starts_with('main__') && !node.is_main
 		&& node.name != 'str' {
 		mut key := node.name
@@ -278,7 +281,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 			if trace_fn in g.trace_fn_definitions {
 				continue
 			}
-			trace_fn_ret_type := g.typ(call_fn.return_type)
+			trace_fn_ret_type := g.styp(call_fn.return_type)
 
 			g.write('VV_LOCAL_SYMBOL ${trace_fn_ret_type} ${c_name(trace_fn)}(')
 			g.definitions.write_string('VV_LOCAL_SYMBOL ${trace_fn_ret_type} ${c_name(trace_fn)}(')
@@ -327,7 +330,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 					g.writeln('\t\tv__debug__before_call_hook(_SLIT("${call_fn.name}"));')
 					g.writeln('\t}')
 				}
-				g.writeln('\t${g.typ(call_fn.return_type)} ret = ${c_name(call_fn.name)}(${orig_fn_args});')
+				g.writeln('\t${g.styp(call_fn.return_type)} ret = ${c_name(call_fn.name)}(${orig_fn_args});')
 				if g.pref.is_callstack {
 					g.writeln('\tarray_pop((array*)&g_callstack);')
 				}
@@ -436,7 +439,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 					}
 					info := var.obj as ast.Var
 					if g.table.sym(info.typ).kind != .function {
-						g.writeln('${g.typ(info.typ)}${deref} ${c_name(var.name)};')
+						g.writeln('${g.styp(info.typ)}${deref} ${c_name(var.name)};')
 					}
 				}
 			}
@@ -542,6 +545,10 @@ fn (mut g Gen) c_fn_name(node &ast.FnDecl) string {
 			name = name.replace_each(c_fn_name_escape_seq)
 		}
 	}
+	if node.is_anon && g.comptime.comptime_for_method_var != ''
+		&& node.scope.is_inherited_var('method') {
+		name = '${name}_${g.comptime.comptime_loop_id}'
+	}
 	if node.language == .c {
 		name = util.no_dots(name)
 	} else {
@@ -568,6 +575,18 @@ fn (mut g Gen) c_fn_name(node &ast.FnDecl) string {
 
 const closure_ctx = '_V_closure_ctx'
 
+fn (mut g Gen) gen_closure_fn_name(node ast.AnonFn) string {
+	mut fn_name := node.decl.name
+	if node.decl.generic_names.len > 0 {
+		fn_name = g.generic_fn_name(g.cur_concrete_types, fn_name)
+	}
+	if node.inherited_vars.len > 0 && g.comptime.comptime_for_method_var != ''
+		&& node.inherited_vars.any(it.name == 'method') {
+		fn_name += '_${g.comptime.comptime_loop_id}'
+	}
+	return fn_name
+}
+
 fn (mut g Gen) closure_ctx(node ast.FnDecl) string {
 	mut fn_name := node.name
 	if node.generic_names.len > 0 {
@@ -578,12 +597,7 @@ fn (mut g Gen) closure_ctx(node ast.FnDecl) string {
 
 fn (mut g Gen) gen_anon_fn(mut node ast.AnonFn) {
 	g.gen_anon_fn_decl(mut node)
-	mut fn_name := node.decl.name
-
-	if node.decl.generic_names.len > 0 {
-		fn_name = g.generic_fn_name(g.cur_concrete_types, fn_name)
-	}
-
+	fn_name := g.gen_closure_fn_name(node)
 	if !node.decl.scope.has_inherited_vars() {
 		g.write(fn_name)
 		return
@@ -649,10 +663,7 @@ fn (mut g Gen) gen_anon_fn(mut node ast.AnonFn) {
 }
 
 fn (mut g Gen) gen_anon_fn_decl(mut node ast.AnonFn) {
-	mut fn_name := node.decl.name
-	if node.decl.generic_names.len > 0 {
-		fn_name = g.generic_fn_name(g.cur_concrete_types, fn_name)
-	}
+	mut fn_name := g.gen_closure_fn_name(node)
 	if node.has_gen[fn_name] {
 		return
 	}
@@ -661,19 +672,22 @@ fn (mut g Gen) gen_anon_fn_decl(mut node ast.AnonFn) {
 	builder.writeln('/*F*/')
 	if node.inherited_vars.len > 0 {
 		ctx_struct := g.closure_ctx(node.decl)
-		builder.writeln('${ctx_struct} {')
-		for var in node.inherited_vars {
-			var_sym := g.table.sym(var.typ)
-			if var_sym.info is ast.FnType {
-				sig := g.fn_var_signature(var_sym.info.func.return_type, var_sym.info.func.params.map(it.typ),
-					c_name(var.name))
-				builder.writeln('\t' + sig + ';')
-			} else {
-				styp := g.typ(var.typ)
-				builder.writeln('\t${styp} ${c_name(var.name)};')
+		if ctx_struct !in g.closure_structs {
+			g.closure_structs << ctx_struct
+			builder.writeln('${ctx_struct} {')
+			for var in node.inherited_vars {
+				var_sym := g.table.sym(var.typ)
+				if var_sym.info is ast.FnType {
+					sig := g.fn_var_signature(var_sym.info.func.return_type, var_sym.info.func.params.map(it.typ),
+						c_name(var.name))
+					builder.writeln('\t' + sig + ';')
+				} else {
+					styp := g.styp(var.typ)
+					builder.writeln('\t${styp} ${c_name(var.name)};')
+				}
 			}
+			builder.writeln('};\n')
 		}
-		builder.writeln('};\n')
 	}
 	pos := g.out.len
 	was_anon_fn := g.anon_fn
@@ -716,7 +730,7 @@ fn (mut g Gen) fn_decl_params(params []ast.Param, scope &ast.Scope, is_variadic 
 	// Veb actions defined by user can have implicit context
 	/*
 	if g.cur_fn != unsafe { nil } && g.cur_fn.is_method && g.cur_mod.name != 'veb' {
-		typ_veb_result := g.table.find_type_idx('veb.Result')
+		typ_veb_result := g.table.find_type('veb.Result')
 		// if params.len == 3 {
 		// println(g.cur_fn)
 		//}
@@ -739,14 +753,14 @@ fn (mut g Gen) fn_decl_params(params []ast.Param, scope &ast.Scope, is_variadic 
 			typ = g.table.sym(typ).array_info().elem_type.set_flag(.variadic)
 		}
 		param_type_sym := g.table.sym(typ)
-		mut param_type_name := g.typ(typ).replace_each(c_fn_name_escape_seq)
+		mut param_type_name := g.styp(typ).replace_each(c_fn_name_escape_seq)
 		if param_type_sym.kind == .function && !typ.has_flag(.option) {
 			info := param_type_sym.info as ast.FnType
 			func := info.func
 			if !g.inside_c_extern {
-				g.write('${g.typ(func.return_type)} (*${caname})(')
+				g.write('${g.styp(func.return_type)} (*${caname})(')
 			}
-			g.definitions.write_string('${g.typ(func.return_type)} (*${caname})(')
+			g.definitions.write_string('${g.styp(func.return_type)} (*${caname})(')
 			g.fn_decl_params(func.params, unsafe { nil }, func.is_variadic, func.is_c_variadic)
 			if !g.inside_c_extern {
 				g.write(')')
@@ -805,13 +819,13 @@ fn (mut g Gen) fn_decl_params(params []ast.Param, scope &ast.Scope, is_variadic 
 
 fn (mut g Gen) get_anon_fn_type_name(mut node ast.AnonFn, var_name string) string {
 	mut builder := strings.new_builder(64)
-	return_styp := g.typ(node.decl.return_type)
+	return_styp := g.styp(node.decl.return_type)
 	builder.write_string('${return_styp} (*${var_name}) (')
 	if node.decl.params.len == 0 {
 		builder.write_string('void)')
 	} else {
 		for i, param in node.decl.params {
-			param_styp := g.typ(param.typ)
+			param_styp := g.styp(param.typ)
 			builder.write_string('${param_styp} ${param.name}')
 			if i != node.decl.params.len - 1 {
 				builder.write_string(', ')
@@ -866,7 +880,7 @@ fn (mut g Gen) call_expr(node ast.CallExpr) {
 			g.empty_line = true
 
 			tmp_res := g.new_tmp_var()
-			g.write('${g.typ(ret_typ)} ${tmp_res} = ')
+			g.write('${g.styp(ret_typ)} ${tmp_res} = ')
 
 			g.last_tmp_call_var << tmp_res
 			g.expr(node.left)
@@ -914,7 +928,7 @@ fn (mut g Gen) call_expr(node ast.CallExpr) {
 				ret_typ = unaliased_type
 			}
 		}
-		mut styp := g.typ(ret_typ)
+		mut styp := g.styp(ret_typ)
 		if gen_or && !is_gen_or_and_assign_rhs {
 			cur_line = g.go_before_last_stmt()
 		}
@@ -925,7 +939,7 @@ fn (mut g Gen) call_expr(node ast.CallExpr) {
 			g.write('${tmp_opt} = ')
 		} else if !g.inside_curry_call {
 			if g.assign_ct_type != 0 && node.or_block.kind in [.propagate_option, .propagate_result] {
-				styp = g.typ(g.assign_ct_type.derive(ret_typ))
+				styp = g.styp(g.assign_ct_type.derive(ret_typ))
 			}
 			g.write('${styp} ${tmp_opt} = ')
 			if node.left is ast.AnonFn {
@@ -957,7 +971,7 @@ fn (mut g Gen) call_expr(node ast.CallExpr) {
 				unwrapped_typ = unaliased_type.clear_option_and_result()
 			}
 		}
-		mut unwrapped_styp := g.typ(unwrapped_typ)
+		mut unwrapped_styp := g.styp(unwrapped_typ)
 		if g.infix_left_var_name.len > 0 {
 			g.indent--
 			g.writeln('}')
@@ -969,7 +983,7 @@ fn (mut g Gen) call_expr(node ast.CallExpr) {
 			if !g.inside_const_opt_or_res {
 				if g.assign_ct_type != 0
 					&& node.or_block.kind in [.propagate_option, .propagate_result] {
-					unwrapped_styp = g.typ(g.assign_ct_type.derive(node.return_type).clear_option_and_result())
+					unwrapped_styp = g.styp(g.assign_ct_type.derive(node.return_type).clear_option_and_result())
 				}
 				if g.table.sym(node.return_type).kind == .array_fixed
 					&& unwrapped_styp.starts_with('_v_') {
@@ -1021,7 +1035,7 @@ fn (mut g Gen) gen_arg_from_type(node_type ast.Type, node ast.Expr) {
 			g.expr(node)
 		} else if !node.is_lvalue()
 			|| (node is ast.Ident && g.table.is_interface_smartcast(node.obj)) {
-			g.write('ADDR(${g.typ(node_type)}, ')
+			g.write('ADDR(${g.styp(node_type)}, ')
 			g.expr(node)
 			g.write(')')
 		} else {
@@ -1042,7 +1056,7 @@ fn (mut g Gen) gen_map_method_call(node ast.CallExpr, left_type ast.Type, left_s
 		}
 		'delete' {
 			left_info := left_sym.info as ast.Map
-			elem_type_str := g.typ(left_info.key_type)
+			elem_type_str := g.styp(left_info.key_type)
 			g.write('map_delete(')
 			g.gen_arg_from_type(left_type, node.left)
 			g.write(', &(${elem_type_str}[]){')
@@ -1111,7 +1125,7 @@ fn (mut g Gen) gen_array_method_call(node ast.CallExpr, left_type ast.Type, left
 			if node.name == 'pop' {
 				noscan = g.check_noscan(array_info.elem_type)
 			}
-			return_type_str := g.typ(node.return_type)
+			return_type_str := g.styp(node.return_type)
 			g.write('(*(${return_type_str}*)array_${node.name}${noscan}(')
 			if node.name == 'pop' {
 				g.gen_arg_from_type(left_type, node.left)
@@ -1167,6 +1181,18 @@ fn (mut g Gen) gen_array_method_call(node ast.CallExpr, left_type ast.Type, left
 				g.write(', ${array_depth}')
 			}
 			g.write(')')
+		}
+		else {
+			return false
+		}
+	}
+	return true
+}
+
+fn (mut g Gen) gen_fixed_array_method_call(node ast.CallExpr, left_type ast.Type, left_sym ast.TypeSymbol) bool {
+	match node.name {
+		'index' {
+			g.gen_array_index(node)
 		}
 		else {
 			return false
@@ -1328,7 +1354,7 @@ fn (mut g Gen) resolve_fn_return_type(node ast.CallExpr) ast.Type {
 	return ast.void_type
 }
 
-fn (g Gen) get_generic_array_element_type(array ast.Array) ast.Type {
+fn (g &Gen) get_generic_array_element_type(array ast.Array) ast.Type {
 	mut cparam_elem_info := array as ast.Array
 	mut cparam_elem_sym := g.table.sym(cparam_elem_info.elem_type)
 	mut typ := ast.void_type
@@ -1666,6 +1692,12 @@ fn (mut g Gen) method_call(node ast.CallExpr) {
 			return
 		}
 	}
+	if final_left_sym.kind == .array_fixed && !(left_sym.kind == .alias
+		&& left_sym.has_method(node.name)) {
+		if g.gen_fixed_array_method_call(node, left_type, final_left_sym) {
+			return
+		}
+	}
 	if final_left_sym.kind == .map && !(left_sym.kind == .alias && left_sym.has_method(node.name)) {
 		if g.gen_map_method_call(node, left_type, final_left_sym) {
 			return
@@ -1702,11 +1734,7 @@ fn (mut g Gen) method_call(node ast.CallExpr) {
 			return
 		}
 	} else if node.name == 'free' {
-		mut rec_type := node.receiver_type
-		if rec_type.has_flag(.shared_f) {
-			rec_type = rec_type.clear_flag(.shared_f).set_nr_muls(0)
-		}
-		g.get_free_method(rec_type)
+		g.register_free_method(node.receiver_type)
 		is_free_method = true
 	}
 	mut cast_n := 0
@@ -1797,7 +1825,7 @@ fn (mut g Gen) method_call(node ast.CallExpr) {
 				g.write('ADDR(${rec_cc_type}, ')
 				cast_n++
 			} else if !(left_type.has_flag(.shared_f)
-				&& g.typ(left_type) == g.typ(node.receiver_type)) {
+				&& g.styp(left_type) == g.styp(node.receiver_type)) {
 				g.write('&')
 			}
 		} else {
@@ -1901,7 +1929,7 @@ fn (mut g Gen) method_call(node ast.CallExpr) {
 				g.write(embed_name)
 			}
 		}
-		if left_type.has_flag(.shared_f) && g.typ(left_type) != g.typ(node.receiver_type) {
+		if left_type.has_flag(.shared_f) && g.styp(left_type) != g.styp(node.receiver_type) {
 			g.write('->val')
 		}
 	}
@@ -1973,6 +2001,7 @@ fn (mut g Gen) fn_call(node ast.CallExpr) {
 	is_json_encode_pretty := name == 'json.encode_pretty'
 	is_json_decode := name == 'json.decode'
 	is_json_fn := is_json_encode || is_json_encode_pretty || is_json_decode
+	is_va_arg := name == 'C.va_arg'
 	mut json_type_str := ''
 	mut json_obj := ''
 	if is_json_fn {
@@ -1982,7 +2011,7 @@ fn (mut g Gen) fn_call(node ast.CallExpr) {
 		cur_line := g.go_before_last_stmt()
 		if is_json_encode || is_json_encode_pretty {
 			g.gen_json_for_type(node.args[0].typ)
-			json_type_str = g.typ(node.args[0].typ)
+			json_type_str = g.styp(node.args[0].typ)
 			// `json__encode` => `json__encode_User`
 			encode_name := js_enc_name(json_type_str)
 			g.empty_line = true
@@ -1999,7 +2028,7 @@ fn (mut g Gen) fn_call(node ast.CallExpr) {
 		} else {
 			ast_type := node.args[0].expr as ast.TypeNode
 			// `json.decode(User, s)` => json.decode_User(s)
-			typ := c_name(g.typ(ast_type.typ))
+			typ := c_name(g.styp(ast_type.typ))
 			fn_name := c_fn_name(name) + '_' + typ
 			g.gen_json_for_type(ast_type.typ)
 			g.empty_line = true
@@ -2019,6 +2048,13 @@ fn (mut g Gen) fn_call(node ast.CallExpr) {
 		g.write('\n${cur_line}')
 		name = ''
 		json_obj = tmp2
+	} else if is_va_arg {
+		ast_type := node.args[0].expr as ast.TypeNode
+		typ := g.styp(ast_type.typ)
+		g.write('va_arg(')
+		g.expr(node.args[1].expr)
+		g.write(', ${typ})')
+		return
 	}
 	if name == '__addr' {
 		name = '&'
@@ -2506,7 +2542,7 @@ fn (mut g Gen) call_args(node ast.CallExpr) {
 		} else if arg.expr is ast.ArrayDecompose {
 			mut d_count := 0
 			for d_i in i .. expected_types.len {
-				g.write('*(${g.typ(expected_types[d_i])}*)array_get(')
+				g.write('*(${g.styp(expected_types[d_i])}*)array_get(')
 				g.expr(arg.expr)
 				g.write(', ${d_count})')
 
@@ -2529,7 +2565,7 @@ fn (mut g Gen) call_args(node ast.CallExpr) {
 				g.empty_line = true
 				ret_type := arg.expr.return_type
 				tmp_var := g.new_tmp_var()
-				g.write('${g.typ(ret_type)} ${tmp_var} = ')
+				g.write('${g.styp(ret_type)} ${tmp_var} = ')
 				g.expr(arg.expr)
 				g.writeln(';')
 				g.write(line)
@@ -2609,7 +2645,7 @@ fn (mut g Gen) call_args(node ast.CallExpr) {
 				}
 			}
 		}
-		elem_type := g.typ(arr_info.elem_type)
+		elem_type := g.styp(arr_info.elem_type)
 		if (g.pref.translated || g.file.is_translated) && args.len == 1 {
 			// Handle `foo(c'str')` for `fn foo(args ...&u8)`
 			// TODOC2V handle this in a better place
@@ -2779,7 +2815,7 @@ fn (mut g Gen) ref_or_deref_arg(arg ast.CallArg, expected_type ast.Type, lang as
 						if arg_typ_sym.kind in [.sum_type, .interface] {
 							atype = arg_typ
 						}
-						g.write('ADDR(${g.typ(atype)}/*qq*/, ')
+						g.write('ADDR(${g.styp(atype)}/*qq*/, ')
 					}
 				}
 			} else if arg_sym.kind == .sum_type && exp_sym.kind == .sum_type {
@@ -2790,7 +2826,7 @@ fn (mut g Gen) ref_or_deref_arg(arg ast.CallArg, expected_type ast.Type, lang as
 					g.expr(arg.expr)
 					return
 				} else if arg.expr is ast.CastExpr {
-					g.write('ADDR(${g.typ(expected_deref_type)}/*sum*/, ')
+					g.write('ADDR(${g.styp(expected_deref_type)}/*sum*/, ')
 					g.expr_with_cast(arg.expr, arg_typ, expected_type)
 					g.write(')')
 					return
@@ -2814,7 +2850,7 @@ fn (mut g Gen) ref_or_deref_arg(arg ast.CallArg, expected_type ast.Type, lang as
 	} else if arg.expr is ast.ArrayInit {
 		if arg.expr.is_fixed {
 			if !arg.expr.has_index {
-				g.write('(${g.typ(arg.expr.typ)})')
+				g.write('(${g.styp(arg.expr.typ)})')
 			}
 		}
 	} else if arg.expr is ast.ComptimeSelector && arg_typ.has_flag(.option)
