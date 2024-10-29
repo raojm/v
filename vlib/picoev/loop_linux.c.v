@@ -2,6 +2,10 @@ module picoev
 
 #include <sys/epoll.h>
 
+$if !musl ? {
+	#include <sys/cdefs.h> // needed for cross compiling to linux
+}
+
 fn C.epoll_create(int) int
 fn C.epoll_wait(int, voidptr, int, int) int
 fn C.epoll_ctl(int, int, int, voidptr) int

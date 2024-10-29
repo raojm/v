@@ -1691,37 +1691,12 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 		c.error('a non generic function called like a generic one', node.concrete_list_pos)
 	}
 
-	if func.generic_names.len > 0 {
-		if has_generic || node.concrete_types.any(it.has_flag(.generic)) {
-			if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
-				node.concrete_types)
-			{
-				if typ.has_flag(.generic) {
-					node.return_type = typ
-				}
-			}
-			c.register_trace_call(node, func)
-			return node.return_type
-		} else {
-			if node.concrete_types.len > 0 && !node.concrete_types.any(it.has_flag(.generic)) {
-				if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
-					node.concrete_types)
-				{
-					node.return_type = typ
-					c.register_trace_call(node, func)
-					return typ
-				}
-			}
-			if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
-				concrete_types)
-			{
-				if typ.has_flag(.generic) {
-					node.return_type = typ
-				}
-				c.register_trace_call(node, func)
-				return typ
-			}
-		}
+	// resolve generic fn return type
+	if func.generic_names.len > 0 && node.return_type != ast.void_type {
+		ret_type := c.resolve_fn_return_type(func, node)
+		c.register_trace_call(node, func)
+		node.return_type = ret_type
+		return ret_type
 	}
 	c.register_trace_call(node, func)
 	return func.return_type
@@ -2065,7 +2040,7 @@ fn (mut c Checker) method_call(mut node ast.CallExpr) ast.Type {
 		&& !(left_sym.kind == .alias && left_sym.has_method(method_name)) {
 		return c.array_builtin_method_call(mut node, left_type)
 	} else if final_left_sym.kind == .array_fixed
-		&& method_name in ['contains', 'index', 'all', 'any', 'map'] && !(left_sym.kind == .alias
+		&& fixed_array_builtin_methods_chk.matches(method_name) && !(left_sym.kind == .alias
 		&& left_sym.has_method(method_name)) {
 		return c.fixed_array_builtin_method_call(mut node, left_type)
 	} else if final_left_sym.kind == .map
@@ -2091,27 +2066,6 @@ fn (mut c Checker) method_call(mut node ast.CallExpr) ast.Type {
 		}
 		node.return_type = left_sym.info.return_type
 		return left_sym.info.return_type
-	} else if final_left_sym.info is ast.ArrayFixed && method_name == 'wait' {
-		elem_sym := c.table.sym(final_left_sym.info.elem_type)
-		if elem_sym.kind == .thread {
-			if node.args.len != 0 {
-				c.error('`.wait()` does not have any arguments', node.args[0].pos)
-			}
-			thread_ret_type := c.unwrap_generic(elem_sym.thread_info().return_type)
-			if thread_ret_type.has_flag(.option) {
-				c.error('`.wait()` cannot be called for an array when thread functions return options. Iterate over the arrays elements instead and handle each returned option with `or`.',
-					node.pos)
-			} else if thread_ret_type.has_flag(.result) {
-				c.error('`.wait()` cannot be called for an array when thread functions return results. Iterate over the arrays elements instead and handle each returned result with `or`.',
-					node.pos)
-			}
-			node.return_type = c.table.find_or_register_array(thread_ret_type)
-			return node.return_type
-		} else {
-			c.error('`${left_sym.name}` has no method `wait()` (only thread handles and arrays of them have)',
-				node.left.pos())
-			return ast.void_type
-		}
 	} else if left_sym.kind == .char && left_type.nr_muls() == 0 && method_name == 'str' {
 		c.error('calling `.str()` on type `char` is not allowed, use its address or cast it to an integer instead',
 			node.left.pos().extend(node.pos))
@@ -2673,6 +2627,9 @@ fn (mut c Checker) method_call(mut node ast.CallExpr) ast.Type {
 		c.resolve_fn_generic_args(method, mut node)
 	}
 
+	if node.concrete_types.len > 0 && method.generic_names.len == 0 {
+		c.error('a non generic function called like a generic one', node.concrete_list_pos)
+	}
 	// resolve return generics struct to concrete type
 	if method.generic_names.len > 0 && method.return_type.has_flag(.generic)
 		&& c.table.cur_fn != unsafe { nil } && c.table.cur_fn.generic_names.len == 0 {
@@ -2681,21 +2638,12 @@ fn (mut c Checker) method_call(mut node ast.CallExpr) ast.Type {
 	} else {
 		node.return_type = method.return_type
 	}
-
-	if node.concrete_types.len > 0 && node.concrete_types.all(!it.has_flag(.generic))
-		&& method.return_type.has_flag(.generic) && method.generic_names.len > 0
-		&& method.generic_names.len == node.concrete_types.len {
-		if typ := c.table.convert_generic_type(method.return_type, method.generic_names,
-			concrete_types)
-		{
-			node.return_type = typ
-		} else {
-			node.return_type = c.table.unwrap_generic_type(method.return_type, method.generic_names,
-				concrete_types)
-		}
-	}
-	if node.concrete_types.len > 0 && method.generic_names.len == 0 {
-		c.error('a non generic function called like a generic one', node.concrete_list_pos)
+	// resolve generic fn return type
+	if method.generic_names.len > 0 && method.return_type.has_flag(.generic) {
+		ret_type := c.resolve_fn_return_type(method, node)
+		c.register_trace_call(node, method)
+		node.return_type = ret_type
+		return ret_type
 	}
 	if method.generic_names.len > 0 {
 		if !left_type.has_flag(.generic) {
@@ -3484,10 +3432,12 @@ fn (mut c Checker) fixed_array_builtin_method_call(mut node ast.CallExpr, left_t
 	if method_name == 'index' {
 		if node.args.len != 1 {
 			c.error('`.index()` expected 1 argument, but got ${node.args.len}', node.pos)
+			return ast.int_type
 		} else if !left_sym.has_method('index') {
 			arg_typ := c.expr(mut node.args[0].expr)
 			c.check_expected_call_arg(arg_typ, elem_typ, node.language, node.args[0]) or {
 				c.error('${err.msg()} in argument 1 to `.index()`', node.args[0].pos)
+				return ast.int_type
 			}
 		}
 		for i, mut arg in node.args {
@@ -3497,10 +3447,12 @@ fn (mut c Checker) fixed_array_builtin_method_call(mut node ast.CallExpr, left_t
 	} else if method_name == 'contains' {
 		if node.args.len != 1 {
 			c.error('`.contains()` expected 1 argument, but got ${node.args.len}', node.pos)
+			return ast.bool_type
 		} else if !left_sym.has_method('contains') {
 			arg_typ := c.expr(mut node.args[0].expr)
 			c.check_expected_call_arg(arg_typ, elem_typ, node.language, node.args[0]) or {
 				c.error('${err.msg()} in argument 1 to `.contains()`', node.args[0].pos)
+				return ast.bool_type
 			}
 		}
 		for i, mut arg in node.args {
@@ -3508,11 +3460,16 @@ fn (mut c Checker) fixed_array_builtin_method_call(mut node ast.CallExpr, left_t
 		}
 		node.return_type = ast.bool_type
 	} else if method_name in ['any', 'all'] {
+		if node.args.len != 1 {
+			c.error('`.${method_name}` expected 1 argument, but got ${node.args.len}',
+				node.pos)
+			return ast.bool_type
+		}
 		if node.args.len > 0 && mut node.args[0].expr is ast.LambdaExpr {
 			if node.args[0].expr.params.len != 1 {
 				c.error('lambda expressions used in the builtin array methods require exactly 1 parameter',
 					node.args[0].expr.pos)
-				return ast.void_type
+				return ast.bool_type
 			}
 			c.support_lambda_expr_one_param(elem_typ, ast.bool_type, mut node.args[0].expr)
 		} else {
@@ -3522,6 +3479,123 @@ fn (mut c Checker) fixed_array_builtin_method_call(mut node ast.CallExpr, left_t
 		c.expr(mut node.args[0].expr)
 		c.check_map_and_filter(false, elem_typ, node)
 		node.return_type = ast.bool_type
+	} else if method_name == 'wait' {
+		elem_sym := c.table.sym(elem_typ)
+		if elem_sym.kind == .thread {
+			if node.args.len != 0 {
+				c.error('`.wait()` does not have any arguments', node.args[0].pos)
+			}
+			thread_ret_type := c.unwrap_generic(elem_sym.thread_info().return_type)
+			if thread_ret_type.has_flag(.option) {
+				c.error('`.wait()` cannot be called for an array when thread functions return options. Iterate over the arrays elements instead and handle each returned option with `or`.',
+					node.pos)
+			} else if thread_ret_type.has_flag(.result) {
+				c.error('`.wait()` cannot be called for an array when thread functions return results. Iterate over the arrays elements instead and handle each returned result with `or`.',
+					node.pos)
+			}
+			node.return_type = c.table.find_or_register_array(thread_ret_type)
+		} else {
+			c.error('`${left_sym.name}` has no method `wait()` (only thread handles and arrays of them have)',
+				node.left.pos())
+		}
+	} else if method_name == 'map' {
+		if node.args.len != 1 {
+			c.error('`.${method_name}` expected 1 argument, but got ${node.args.len}',
+				node.pos)
+			return ast.void_type
+		}
+		if mut node.args[0].expr is ast.LambdaExpr {
+			if node.args[0].expr.params.len != 1 {
+				c.error('lambda expressions used in the builtin array methods require exactly 1 parameter',
+					node.args[0].expr.pos)
+				return ast.void_type
+			}
+			c.lambda_expr_fix_type_of_param(mut node.args[0].expr, mut node.args[0].expr.params[0],
+				elem_typ)
+			le_type := c.expr(mut node.args[0].expr.expr)
+			c.support_lambda_expr_one_param(elem_typ, le_type, mut node.args[0].expr)
+		} else {
+			// position of `it` doesn't matter
+			scope_register_it(mut node.scope, node.pos, elem_typ)
+		}
+
+		c.check_map_and_filter(true, elem_typ, node)
+		arg_type := c.check_expr_option_or_result_call(node.args[0].expr, c.expr(mut node.args[0].expr))
+		arg_sym := c.table.sym(arg_type)
+		ret_type := match arg_sym.info {
+			ast.FnType {
+				if node.args[0].expr is ast.SelectorExpr {
+					arg_type
+				} else {
+					arg_sym.info.func.return_type
+				}
+			}
+			else {
+				arg_type
+			}
+		}
+		node.return_type = c.table.find_or_register_array_fixed(c.unwrap_generic(ret_type),
+			array_info.size, array_info.size_expr, false)
+		if node.return_type.has_flag(.shared_f) {
+			node.return_type = node.return_type.clear_flag(.shared_f).deref()
+		}
+		ret_sym := c.table.sym(ret_type)
+		if ret_sym.kind == .multi_return {
+			c.error('returning multiple values is not supported in .map() calls', node.pos)
+		}
+	} else if method_name in ['sort', 'sorted'] {
+		if method_name == 'sort' {
+			if node.left is ast.CallExpr {
+				c.error('the `sort()` method can be called only on mutable receivers, but `${node.left}` is a call expression',
+					node.pos)
+			}
+			c.check_for_mut_receiver(mut node.left)
+		}
+		// position of `a` and `b` doesn't matter, they're the same
+		scope_register_a_b(mut node.scope, node.pos, elem_typ)
+
+		if node.args.len > 1 {
+			c.error('expected 0 or 1 argument, but got ${node.args.len}', node.pos)
+		} else if node.args.len == 1 {
+			if mut node.args[0].expr is ast.LambdaExpr {
+				c.support_lambda_expr_in_sort(elem_typ.ref(), ast.bool_type, mut node.args[0].expr)
+			} else if node.args[0].expr is ast.InfixExpr {
+				c.check_sort_external_variable_access(node.args[0].expr)
+				if node.args[0].expr.op !in [.gt, .lt] {
+					c.error('`.${method_name}()` can only use `<` or `>` comparison',
+						node.pos)
+				}
+				left_name := '${node.args[0].expr.left}'[0]
+				right_name := '${node.args[0].expr.right}'[0]
+				if left_name !in [`a`, `b`] || right_name !in [`a`, `b`] {
+					c.error('`.${method_name}()` can only use `a` or `b` as argument, e.g. `arr.${method_name}(a < b)`',
+						node.pos)
+				} else if left_name == right_name {
+					c.error('`.${method_name}()` cannot use same argument', node.pos)
+				}
+				if node.args[0].expr.left !in [ast.Ident, ast.SelectorExpr, ast.IndexExpr]
+					|| node.args[0].expr.right !in [ast.Ident, ast.SelectorExpr, ast.IndexExpr] {
+					c.error('`.${method_name}()` can only use ident, index or selector as argument, \ne.g. `arr.${method_name}(a < b)`, `arr.${method_name}(a.id < b.id)`, `arr.${method_name}(a[0] < b[0])`',
+						node.pos)
+				}
+			} else {
+				c.error(
+					'`.${method_name}()` requires a `<` or `>` comparison as the first and only argument' +
+					'\ne.g. `users.${method_name}(a.id < b.id)`', node.pos)
+			}
+		} else if !(c.table.sym(elem_typ).has_method('<')
+			|| c.table.unalias_num_type(elem_typ) in [ast.int_type, ast.int_type.ref(), ast.string_type, ast.string_type.ref(), ast.i8_type, ast.i16_type, ast.i64_type, ast.u8_type, ast.rune_type, ast.u16_type, ast.u32_type, ast.u64_type, ast.f32_type, ast.f64_type, ast.char_type, ast.bool_type, ast.float_literal_type, ast.int_literal_type]) {
+			c.error('custom sorting condition must be supplied for type `${c.table.type_to_str(elem_typ)}`',
+				node.pos)
+		}
+		for mut arg in node.args {
+			c.check_expr_option_or_result_call(arg.expr, c.expr(mut arg.expr))
+		}
+		if method_name == 'sort' {
+			node.return_type = ast.void_type
+		} else {
+			node.return_type = node.left_type
+		}
 	}
 	return node.return_type
 }
@@ -3550,4 +3624,89 @@ fn scope_register_var_name(mut s ast.Scope, pos token.Pos, typ ast.Type, name st
 		typ:     typ
 		is_used: true
 	})
+}
+
+// resolve_fn_return_type resolves the generic return type of fn with its related CallExpr
+fn (mut c Checker) resolve_fn_return_type(func &ast.Fn, node ast.CallExpr) ast.Type {
+	mut ret_type := func.return_type
+	if node.is_method {
+		// resolve possible generic types
+		concrete_types := node.concrete_types.map(c.unwrap_generic(it))
+		// generic method being called from a non-generic func
+		if func.generic_names.len > 0 && func.return_type.has_flag(.generic)
+			&& c.table.cur_fn != unsafe { nil } && c.table.cur_fn.generic_names.len == 0 {
+			ret_type = c.table.unwrap_generic_type(func.return_type, func.generic_names,
+				concrete_types)
+		}
+		// generic method called without generic type to be resolved on call
+		if node.concrete_types.len > 0 && node.concrete_types.all(!it.has_flag(.generic))
+			&& func.return_type.has_flag(.generic) && func.generic_names.len > 0
+			&& func.generic_names.len == node.concrete_types.len {
+			if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
+				concrete_types)
+			{
+				return typ
+			} else {
+				return c.table.unwrap_generic_type(func.return_type, func.generic_names,
+					concrete_types)
+			}
+		}
+	} else {
+		concrete_types := node.concrete_types.map(c.unwrap_generic(it))
+		// generic func called from non-generic func
+		if node.concrete_types.len > 0 && func.return_type != 0 && c.table.cur_fn != unsafe { nil }
+			&& c.table.cur_fn.generic_names.len == 0 {
+			if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
+				concrete_types)
+			{
+				return typ
+			}
+			return ret_type
+		}
+		if func.generic_names.len > 0 {
+			has_generic := node.raw_concrete_types.any(it.has_flag(.generic))
+			has_any_generic := node.concrete_types.any(it.has_flag(.generic))
+			// fn call with any generic type to be resolved on call (e.g. foo[T]())
+			if has_generic || has_any_generic {
+				if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
+					node.concrete_types)
+				{
+					if typ.has_flag(.generic) {
+						return typ
+					}
+				}
+			} else {
+				// fn call with all generic types already resolved to its concrete ones (e.g. foo[int]())
+				if node.concrete_types.len > 0 && !has_any_generic {
+					if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
+						node.concrete_types)
+					{
+						return typ
+					}
+				}
+				// use fresh resolved concrete_types list
+				if typ := c.table.convert_generic_type(func.return_type, func.generic_names,
+					concrete_types)
+				{
+					return typ
+				}
+			}
+		}
+	}
+	return ret_type
+}
+
+// resolve_return_type resolves the generic return type of CallExpr
+fn (mut c Checker) resolve_return_type(node ast.CallExpr) ast.Type {
+	if node.is_method {
+		left_sym := c.table.sym(c.unwrap_generic(node.left_type))
+		if method := c.table.find_method(left_sym, node.name) {
+			return c.resolve_fn_return_type(method, node)
+		}
+	} else {
+		if func := c.table.find_fn(node.name) {
+			return c.resolve_fn_return_type(func, node)
+		}
+	}
+	return node.return_type
 }
