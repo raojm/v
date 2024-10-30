@@ -102,12 +102,7 @@ fn (mut g Gen) gen_reflection_sym(tsym ast.TypeSymbol) string {
 	name := tsym.name.all_after_last('.')
 	info := g.gen_reflection_sym_info(tsym)
 	methods := g.gen_function_array(tsym.methods)
-	mut size_ := 0
-	mut align_ := 0
-	if tsym.idx > 0 {
-		size_,align_ = g.table.type_size(tsym.idx)
-	}
-	return '(${cprefix}TypeSymbol){.name=_SLIT("${name}"),.mod=_SLIT("${tsym.mod}"),.idx=${tsym.idx},.parent_idx=${tsym.parent_idx},.size=${size_},.align=${align_},.language=${cprefix}VLanguage__${tsym.language},.kind=${cprefix}VKind__${kind_name},.info=${info},.methods=${methods}}'
+	return '(${cprefix}TypeSymbol){.name=_SLIT("${name}"),.mod=_SLIT("${tsym.mod}"),.idx=${tsym.idx},.parent_idx=${tsym.parent_idx},${g.get_type_size_offset(tsym)}.language=${cprefix}VLanguage__${tsym.language},.kind=${cprefix}VKind__${kind_name},.info=${info},.methods=${methods}}'
 }
 
 // gen_attrs_array generates C code for []Attr
@@ -123,6 +118,83 @@ fn (g &Gen) gen_attrs_array(attrs []ast.Attr) string {
 	return out
 }
 
+fn (g Gen) get_type_size_offset(type_symbol ast.TypeSymbol) string {
+	mut result := ''
+	mut size_ := 0
+	mut align_ := 0
+	if type_symbol.idx > 0 {
+		size_,align_ = g.table.type_size(type_symbol.idx)
+	}
+
+	if type_symbol.language == ast.Language.c && type_symbol.info is ast.Struct{
+		info := type_symbol.info as ast.Struct
+
+		c_struct_name := if type_symbol.name in ['C.__stat64', 'C.DIR'] { //mac 没有__stat64结构, DIR比较异常
+			''
+		} else if _ := info.attrs.find_first('typedef') {
+			type_symbol.name.replace_once('C.', '')
+		}
+		else {
+			type_symbol.name.replace_once('C.', 'struct ')
+		}
+
+		result = if '' != c_struct_name {'.size=sizeof(${c_struct_name}),.align=__alignof(${c_struct_name}),'} else {''}
+
+	} else {
+		result = '.size=${size_},.align=${align_},'
+	}
+
+	return result
+}
+
+fn (g Gen) get_field_offset(in_type ast.Type, name string) string {
+	mut result := '0'
+	if in_type > 0 {
+		type_symbol := g.table.sym(in_type)
+		// if type_symbol.name.contains('TestStruct') {
+		// 	println(type_symbol.debug())
+		// }
+		mut type_name := ''
+		match type_symbol.language {
+			.v {
+				sym_name := if type_symbol.info is ast.Struct && type_symbol.info.scoped_name != '' {
+					type_symbol.info.scoped_name
+				} else {
+					type_symbol.name
+				}
+				type_name = util.no_dots(sym_name)
+			}
+			.c {
+				if type_symbol.info is ast.Struct {
+					info := type_symbol.info as ast.Struct
+					type_name = type_symbol.name.replace_once('C.', 'struct ')
+					//mac 没有__stat64结构
+					if type_symbol.name == 'C.__stat64' {
+						''
+					} else if _ := info.attrs.find_first('typedef') {
+						type_name = type_symbol.name.replace_once('C.', '')
+					}
+				}
+			}
+			else {
+
+			}
+		}
+
+		field_name := match type_symbol.language {
+			.v {
+				c_name(name)
+			}
+			else {
+				util.no_dots(name)
+			}
+		}
+		result = if '' != type_name { '__offsetof(${type_name},${field_name})' } else { '0' }
+	}
+
+	return result
+}
+
 // gen_fields_array generates C code for []StructField
 @[inline]
 fn (g &Gen) gen_fields_array(fields []ast.StructField) string {
@@ -131,7 +203,7 @@ fn (g &Gen) gen_fields_array(fields []ast.StructField) string {
 	}
 	mut out := 'new_array_from_c_array(${fields.len},${fields.len},sizeof(${cprefix}StructField),'
 	out += '_MOV((${cprefix}StructField[${fields.len}]){'
-	out += fields.map('((${cprefix}StructField){.name=_SLIT("${it.name}"),.typ=${int(it.typ)},.attrs=${g.gen_attrs_array(it.attrs)},.is_pub=${it.is_pub},.is_mut=${it.is_mut}})').join(',')
+	out += fields.map('((${cprefix}StructField){.name=_SLIT("${it.name}"),.typ=${int(it.typ)},.attrs=${g.gen_attrs_array(it.attrs)},.is_pub=${it.is_pub},.is_mut=${it.is_mut},.offset=${g.get_field_offset(it.container_typ, it.name)}})').join(',')
 	out += '}))'
 	return out
 }
