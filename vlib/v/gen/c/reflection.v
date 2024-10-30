@@ -129,13 +129,14 @@ fn (g Gen) get_type_size_offset(type_symbol ast.TypeSymbol) string {
 	if type_symbol.language == ast.Language.c && type_symbol.info is ast.Struct{
 		info := type_symbol.info as ast.Struct
 
-		c_struct_name := if type_symbol.name in ['C.__stat64', 'C.DIR'] { //mac 没有__stat64结构, DIR比较异常
-			''
+        mut c_struct_name := ''
+		if type_symbol.name in ['C.__stat64', 'C.DIR']! { //mac 没有__stat64结构, DIR比较异常
+			c_struct_name = ''
 		} else if _ := info.attrs.find_first('typedef') {
-			type_symbol.name.replace_once('C.', '')
+			c_struct_name = type_symbol.name.replace_once('C.', '')
 		}
 		else {
-			type_symbol.name.replace_once('C.', 'struct ')
+			c_struct_name = type_symbol.name.replace_once('C.', 'struct ')
 		}
 
 		result = if '' != c_struct_name {'.size=sizeof(${c_struct_name}),.align=__alignof(${c_struct_name}),'} else {''}
@@ -170,7 +171,7 @@ fn (g Gen) get_field_offset(in_type ast.Type, name string) string {
 					type_name = type_symbol.name.replace_once('C.', 'struct ')
 					//mac 没有__stat64结构
 					if type_symbol.name == 'C.__stat64' {
-						''
+						type_name = ''
 					} else if _ := info.attrs.find_first('typedef') {
 						type_name = type_symbol.name.replace_once('C.', '')
 					}
