@@ -152,6 +152,7 @@ pub:
 	attrs  []string // field attrs
 	is_pub bool     // is pub?
 	is_mut bool     // is mut?
+	size   int
 	offset int
 }
 

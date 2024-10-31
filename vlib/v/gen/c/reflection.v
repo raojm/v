@@ -148,32 +148,33 @@ fn (g Gen) get_type_size_offset(type_symbol ast.TypeSymbol) string {
 	return result
 }
 
-fn (g Gen) get_field_offset(in_type ast.Type, name string) string {
-	mut result := '0'
-	if in_type > 0 {
-		type_symbol := g.table.sym(in_type)
-		// if type_symbol.name.contains('TestStruct') {
-		// 	println(type_symbol.debug())
+fn (g Gen) get_field_size_offset(field &ast.StructField) string {
+	mut result := '.size=0,.offset=0'
+	if field.container_typ > 0 &&  field.typ > 0 {
+		type_symbol := g.table.sym(field.typ)
+		container_type_symbol := g.table.sym(field.container_typ)
+		// if container_type_symbol.name.contains('TestStruct') {
+		// 	println(container_type_symbol.debug())
 		// }
 		mut type_name := ''
-		match type_symbol.language {
+		match container_type_symbol.language {
 			.v {
-				sym_name := if type_symbol.info is ast.Struct && type_symbol.info.scoped_name != '' {
-					type_symbol.info.scoped_name
+				sym_name := if container_type_symbol.info is ast.Struct && container_type_symbol.info.scoped_name != '' {
+					container_type_symbol.info.scoped_name
 				} else {
-					type_symbol.name
+					container_type_symbol.name
 				}
 				type_name = util.no_dots(sym_name)
 			}
 			.c {
-				if type_symbol.info is ast.Struct {
-					info := type_symbol.info as ast.Struct
-					type_name = type_symbol.name.replace_once('C.', 'struct ')
+				if container_type_symbol.info is ast.Struct {
+					info := container_type_symbol.info as ast.Struct
+					type_name = container_type_symbol.name.replace_once('C.', 'struct ')
 					//mac 没有__stat64结构
-					if type_symbol.name == 'C.__stat64' {
+					if container_type_symbol.name == 'C.__stat64' {
 						type_name = ''
 					} else if _ := info.attrs.find_first('typedef') {
-						type_name = type_symbol.name.replace_once('C.', '')
+						type_name = container_type_symbol.name.replace_once('C.', '')
 					}
 				}
 			}
@@ -182,15 +183,16 @@ fn (g Gen) get_field_offset(in_type ast.Type, name string) string {
 			}
 		}
 
-		field_name := match type_symbol.language {
+		field_name := match container_type_symbol.language {
 			.v {
-				c_name(name)
+				c_name(field.name)
 			}
 			else {
-				util.no_dots(name)
+				util.no_dots(field.name)
 			}
 		}
-		result = if '' != type_name { '__offsetof(${type_name},${field_name})' } else { '0' }
+
+		result = if '' != type_name { '.size=${type_symbol.size},.offset=__offsetof(${type_name},${field_name})' } else { '.size=${type_symbol.size},.offset=0' }
 	}
 
 	return result
@@ -204,7 +206,7 @@ fn (g &Gen) gen_fields_array(fields []ast.StructField) string {
 	}
 	mut out := 'new_array_from_c_array(${fields.len},${fields.len},sizeof(${cprefix}StructField),'
 	out += '_MOV((${cprefix}StructField[${fields.len}]){'
-	out += fields.map('((${cprefix}StructField){.name=_SLIT("${it.name}"),.typ=${int(it.typ)},.attrs=${g.gen_attrs_array(it.attrs)},.is_pub=${it.is_pub},.is_mut=${it.is_mut},.offset=${g.get_field_offset(it.container_typ, it.name)}})').join(',')
+	out += fields.map('((${cprefix}StructField){.name=_SLIT("${it.name}"),.typ=${int(it.typ)},.attrs=${g.gen_attrs_array(it.attrs)},.is_pub=${it.is_pub},.is_mut=${it.is_mut},${g.get_field_size_offset(it)} })').join(',')
 	out += '}))'
 	return out
 }
