@@ -4,6 +4,7 @@ import strings
 import v.ast
 import v.util
 import v.token
+import os
 
 const print_everything_fns = ['println', 'print', 'eprintln', 'eprint', 'panic']
 
@@ -38,8 +39,12 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 		// This is done so that all generic function calls can
 		// have a chance to populate c.table.fn_generic_types with
 		// the correct concrete types.
-		c.file.generic_fns << node
-		c.need_recheck_generic_fns = true
+		fkey := node.fkey()
+		if !c.generic_fns[fkey] {
+			c.need_recheck_generic_fns = true
+			c.generic_fns[fkey] = true
+			c.file.generic_fns << node
+		}
 		return
 	}
 	node.ninstances++
@@ -264,7 +269,7 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 					param.pos)
 			}
 			if param.typ.has_flag(.result) {
-				c.error('Result type argument is not supported currently', param.type_pos)
+				c.error('result type arguments are not supported', param.type_pos)
 			}
 			arg_typ_sym := c.table.sym(param.typ)
 			if arg_typ_sym.info is ast.Struct {
@@ -336,7 +341,7 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 				&& node.name.after_char(`.`) in reserved_type_names {
 				c.error('top level declaration cannot shadow builtin type', node.pos)
 			}
-			if _ := node.name.index('__static__') {
+			if node.is_static_type_method {
 				if sym := c.table.find_sym(node.name.all_before('__static__')) {
 					if sym.kind == .placeholder {
 						c.error('unknown type `${sym.name}`', node.static_type_pos)
@@ -701,6 +706,9 @@ fn (mut c Checker) call_expr(mut node ast.CallExpr) ast.Type {
 				// Only expressions like `str + 'b'` need to be freed.
 				continue
 			}
+			if arg.expr is ast.CallExpr && arg.expr.name in ['json.encode', 'json.encode_pretty'] {
+				continue
+			}
 			node.args[i].is_tmp_autofree = true
 		}
 		// TODO: copy pasta from above
@@ -820,9 +828,9 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 	is_va_arg := node.name == 'C.va_arg'
 	is_json_decode := node.name == 'json.decode'
 	mut fn_name := node.name
-	if index := node.name.index('__static__') {
+	if node.is_static_method {
 		// resolve static call T.name()
-		if index > 0 && c.table.cur_fn != unsafe { nil } {
+		if c.table.cur_fn != unsafe { nil } {
 			fn_name = c.table.convert_generic_static_type_name(fn_name, c.table.cur_fn.generic_names,
 				c.table.cur_concrete_types)
 		}
@@ -1038,10 +1046,12 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 			unsafe { c.table.fns[fn_name].usages++ }
 		}
 	}
-	// already imported symbol (static Foo.new() in another module)
-	if !found && fn_name.len > 0 && fn_name[0].is_capital() {
+
+	// static method resolution
+	if !found && node.is_static_method {
 		if index := fn_name.index('__static__') {
 			owner_name := fn_name#[..index]
+			// already imported symbol (static Foo.new() in another module)
 			for import_sym in c.file.imports.filter(it.syms.any(it.name == owner_name)) {
 				qualified_name := '${import_sym.mod}.${fn_name}'
 				if f := c.table.find_fn(qualified_name) {
@@ -1052,55 +1062,75 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 					break
 				}
 			}
-		}
-	}
-	// Enum.from_string, `mod.Enum.from_string('item')`, `Enum.from_string('item')`
-	if !found && fn_name.ends_with('__static__from_string') {
-		enum_name := fn_name.all_before('__static__')
-		mut full_enum_name := if !enum_name.contains('.') {
-			c.mod + '.' + enum_name
-		} else {
-			enum_name
-		}
-		mut idx := c.table.type_idxs[full_enum_name]
-		if idx > 0 {
-			// is from another mod.
-			if enum_name.contains('.') {
-				if !c.check_type_and_visibility(full_enum_name, idx, .enum, node.pos) {
-					return ast.void_type
+			if !found {
+				// aliased static method on current mod
+				full_type_name := if !fn_name.contains('.') {
+					c.mod + '.' + owner_name
+				} else {
+					owner_name
+				}
+				typ := c.table.find_type(full_type_name)
+				if typ != 0 {
+					final_sym := c.table.final_sym(typ)
+					// try to find the unaliased static method name
+					orig_name := final_sym.name + fn_name#[index..]
+					if f := c.table.find_fn(orig_name) {
+						found = true
+						func = f
+						unsafe { c.table.fns[orig_name].usages++ }
+						node.name = orig_name
+					}
 				}
 			}
-		} else if !enum_name.contains('.') {
-			// find from another mods.
-			for import_sym in c.file.imports {
-				full_enum_name = '${import_sym.mod}.${enum_name}'
-				idx = c.table.type_idxs[full_enum_name]
-				if idx < 1 {
-					continue
-				}
-				if !c.check_type_and_visibility(full_enum_name, idx, .enum, node.pos) {
-					return ast.void_type
-				}
-				break
+		}
+		// Enum.from_string, `mod.Enum.from_string('item')`, `Enum.from_string('item')`
+		if !found && fn_name.ends_with('__static__from_string') {
+			enum_name := fn_name.all_before('__static__')
+			mut full_enum_name := if !enum_name.contains('.') {
+				c.mod + '.' + enum_name
+			} else {
+				enum_name
 			}
-		}
-		if idx == 0 {
-			c.error('unknown enum `${enum_name}`', node.pos)
-			return ast.void_type
-		}
+			mut idx := c.table.type_idxs[full_enum_name]
+			if idx > 0 {
+				// is from another mod.
+				if enum_name.contains('.') {
+					if !c.check_type_and_visibility(full_enum_name, idx, .enum, node.pos) {
+						return ast.void_type
+					}
+				}
+			} else if !enum_name.contains('.') {
+				// find from another mods.
+				for import_sym in c.file.imports {
+					full_enum_name = '${import_sym.mod}.${enum_name}'
+					idx = c.table.type_idxs[full_enum_name]
+					if idx < 1 {
+						continue
+					}
+					if !c.check_type_and_visibility(full_enum_name, idx, .enum, node.pos) {
+						return ast.void_type
+					}
+					break
+				}
+			}
+			if idx == 0 {
+				c.error('unknown enum `${enum_name}`', node.pos)
+				return ast.void_type
+			}
 
-		ret_typ := ast.idx_to_type(idx).set_flag(.option)
-		if node.args.len != 1 {
-			c.error('expected 1 argument, but got ${node.args.len}', node.pos)
-		} else {
-			node.args[0].typ = c.expr(mut node.args[0].expr)
-			if node.args[0].typ != ast.string_type {
-				styp := c.table.type_to_str(node.args[0].typ)
-				c.error('expected `string` argument, but got `${styp}`', node.pos)
+			ret_typ := ast.idx_to_type(idx).set_flag(.option)
+			if node.args.len != 1 {
+				c.error('expected 1 argument, but got ${node.args.len}', node.pos)
+			} else {
+				node.args[0].typ = c.expr(mut node.args[0].expr)
+				if node.args[0].typ != ast.string_type {
+					styp := c.table.type_to_str(node.args[0].typ)
+					c.error('expected `string` argument, but got `${styp}`', node.pos)
+				}
 			}
+			node.return_type = ret_typ
+			return ret_typ
 		}
-		node.return_type = ret_typ
-		return ret_typ
 	}
 	mut is_native_builtin := false
 	if !found && c.pref.backend == .native {
@@ -1235,6 +1265,35 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 				c.error(suggestion.say('unknown function: ${fn_name} '), node.pos)
 				return ast.void_type
 			}
+		}
+		name := node.get_name()
+		if name.starts_with('C.') {
+			println('unknown function ${name}, ' +
+				'searching for the C definition in one of the #includes')
+			mut includes := []string{cap: 5}
+			for stmt in c.file.stmts {
+				if stmt is ast.HashStmt {
+					if stmt.kind == 'include' {
+						includes << '#include ${stmt.main}'
+					}
+				}
+			}
+			mut tmp_c_file_with_includes := os.create('tmp.c') or { panic(err) }
+			tmp_c_file_with_includes.write_string(includes.join('\n')) or { panic(err) }
+			tmp_c_file_with_includes.close()
+
+			os.execute('v translate fndef ${name[2..]} tmp.c')
+			x := os.read_file('__cdefs_autogen.v') or { return ast.void_type }
+			if x.contains('fn ${name}') {
+				println(
+					'function definition for ${name} has been generated in __cdefs_autogen.v. ' +
+					'Please re-run the compilation with `v .` or `v run .`')
+				os.rm('tmp.c') or {}
+				exit(0)
+			} else {
+				println('Failed to generate function definition. Please report it via github.com/vlang/v/issues')
+			}
+			os.rm('tmp.c') or {}
 		}
 		c.error('unknown function: ${node.get_name()}', node.pos)
 		return ast.void_type
@@ -1803,7 +1862,7 @@ fn (mut c Checker) resolve_comptime_args(func &ast.Fn, node_ ast.CallExpr, concr
 			if call_arg.expr is ast.Ident {
 				if call_arg.expr.obj is ast.Var {
 					if call_arg.expr.obj.ct_type_var !in [.generic_var, .generic_param, .no_comptime] {
-						mut ctyp := c.comptime.get_comptime_var_type(call_arg.expr)
+						mut ctyp := c.comptime.get_type(call_arg.expr)
 						if ctyp != ast.void_type {
 							arg_sym := c.table.sym(ctyp)
 							param_sym := c.table.final_sym(param_typ)
@@ -1826,7 +1885,7 @@ fn (mut c Checker) resolve_comptime_args(func &ast.Fn, node_ ast.CallExpr, concr
 							comptime_args[k] = ctyp
 						}
 					} else if call_arg.expr.obj.ct_type_var == .generic_param {
-						mut ctyp := c.comptime.get_comptime_var_type(call_arg.expr)
+						mut ctyp := c.comptime.get_type(call_arg.expr)
 						if ctyp != ast.void_type {
 							arg_sym := c.table.final_sym(call_arg.typ)
 							param_typ_sym := c.table.sym(param_typ)
@@ -1889,7 +1948,10 @@ fn (mut c Checker) resolve_comptime_args(func &ast.Fn, node_ ast.CallExpr, concr
 							}
 						}
 					} else if call_arg.expr.obj.ct_type_var == .generic_var {
-						mut ctyp := c.comptime.get_comptime_var_type(call_arg.expr)
+						mut ctyp := c.comptime.get_type(call_arg.expr)
+						if node_.args[i].expr.is_auto_deref_var() {
+							ctyp = ctyp.deref()
+						}
 						if ctyp.nr_muls() > 0 && param_typ.nr_muls() > 0 {
 							ctyp = ctyp.set_nr_muls(0)
 						}
@@ -1898,14 +1960,14 @@ fn (mut c Checker) resolve_comptime_args(func &ast.Fn, node_ ast.CallExpr, concr
 				}
 			} else if call_arg.expr is ast.PrefixExpr {
 				if call_arg.expr.right is ast.ComptimeSelector {
-					comptime_args[k] = c.comptime.get_comptime_var_type(call_arg.expr.right)
+					comptime_args[k] = c.comptime.get_type(call_arg.expr.right)
 					comptime_args[k] = comptime_args[k].deref()
 					if comptime_args[k].nr_muls() > 0 && param_typ.nr_muls() > 0 {
 						comptime_args[k] = comptime_args[k].set_nr_muls(0)
 					}
 				}
 			} else if call_arg.expr is ast.ComptimeSelector {
-				ct_value := c.comptime.get_comptime_var_type(call_arg.expr)
+				ct_value := c.comptime.get_type(call_arg.expr)
 				param_typ_sym := c.table.sym(param_typ)
 				if ct_value != ast.void_type {
 					arg_sym := c.table.final_sym(call_arg.typ)
@@ -1930,7 +1992,7 @@ fn (mut c Checker) resolve_comptime_args(func &ast.Fn, node_ ast.CallExpr, concr
 					}
 				}
 			} else if call_arg.expr is ast.ComptimeCall {
-				comptime_args[k] = c.comptime.get_comptime_var_type(call_arg.expr)
+				comptime_args[k] = c.comptime.get_type(call_arg.expr)
 			}
 		}
 	}
@@ -2764,7 +2826,7 @@ fn (mut c Checker) post_process_generic_fns() ! {
 		fkey := node.fkey()
 		all_generic_fns[fkey]++
 		if all_generic_fns[fkey] > generic_fn_cutoff_limit_per_fn {
-			c.error('generic function visited more than ${generic_fn_cutoff_limit_per_fn} times',
+			c.error('${fkey} generic function visited more than ${generic_fn_cutoff_limit_per_fn} times',
 				node.pos)
 			return error('fkey: ${fkey}')
 		}
@@ -3666,6 +3728,16 @@ fn (mut c Checker) fixed_array_builtin_method_call(mut node ast.CallExpr, left_t
 			} else {
 				node.return_type = node.left_type
 				node.receiver_type = node.left_type
+			}
+		}
+	} else if method_name in ['reverse', 'reverse_in_place'] {
+		if node.args.len != 0 {
+			c.error('`.${method_name}` does not have any arguments', node.args[0].pos)
+		} else {
+			if method_name == 'reverse' {
+				node.return_type = node.left_type
+			} else {
+				node.return_type = ast.void_type
 			}
 		}
 	}
