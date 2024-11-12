@@ -130,7 +130,7 @@ fn (g Gen) get_type_size_offset(type_symbol ast.TypeSymbol) string {
 		info := type_symbol.info as ast.Struct
 
         mut c_struct_name := ''
-		if type_symbol.name in ['C.__stat64', 'C.DIR']! { //mac 没有__stat64结构, DIR比较异常
+		if type_symbol.name in ['C.__stat64', 'C.DIR', 'C.termios']! || type_symbol.mod.starts_with('os') || info.is_union { //mac 没有__stat64结构, DIR比较异常
 			c_struct_name = ''
 		} else if _ := info.attrs.find_first('typedef') {
 			c_struct_name = type_symbol.name.replace_once('C.', '')
@@ -171,7 +171,7 @@ fn (g Gen) get_field_size_offset(field &ast.StructField) string {
 					info := container_type_symbol.info as ast.Struct
 					type_name = container_type_symbol.name.replace_once('C.', 'struct ')
 					//mac 没有__stat64结构
-					if container_type_symbol.name == 'C.__stat64' {
+					if container_type_symbol.name in ['C.__stat64', 'C.DIR', 'C.termios']! || container_type_symbol.mod.starts_with('os') || info.is_union {
 						type_name = ''
 					} else if _ := info.attrs.find_first('typedef') {
 						type_name = container_type_symbol.name.replace_once('C.', '')
