@@ -287,6 +287,7 @@ pub enum GenericKindField {
 	name
 	typ
 	unaliased_typ
+	indirections
 }
 
 // `foo.bar`
@@ -360,6 +361,7 @@ pub:
 	is_global        bool
 	is_volatile      bool
 	is_deprecated    bool
+	is_embed         bool
 pub mut:
 	is_recursive     bool
 	is_part_of_union bool
@@ -485,6 +487,7 @@ pub:
 	next_comments    []Comment
 	has_prev_newline bool
 	has_break_line   bool
+	is_embed         bool
 pub mut:
 	expr          Expr   // `val1`
 	name          string // 'field1'
@@ -803,6 +806,7 @@ pub mut:
 	is_noreturn            bool // whether the function/method is marked as [noreturn]
 	is_ctor_new            bool // if JS ctor calls requires `new` before call, marked as `[use_new]` in V
 	is_file_translated     bool // true, when the file it resides in is `@[translated]`
+	is_static_method       bool // it is a static method call
 	args                   []CallArg
 	expected_arg_types     []Type
 	comptime_ret_val       bool
@@ -825,6 +829,7 @@ pub mut:
 	scope                  &Scope = unsafe { nil }
 	from_embed_types       []Type // holds the type of the embed that the method is called from
 	comments               []Comment
+	is_return_used         bool // return value is used for another expr
 	//
 	is_expand_simple_interpolation bool // true, when the function/method is marked as @[expand_simple_interpolation]
 	// Calls to it with an interpolation argument like `b.f('x ${y}')`, will be converted to `b.f('x ')` followed by `b.f(y)`.
@@ -993,6 +998,9 @@ pub mut:
 	global_labels    []string // from `asm { .globl labelname }`
 	template_paths   []string // all the .html/.md files that were processed with $tmpl
 	unique_prefix    string   // a hash of the `.path` field, used for making anon fn generation unique
+	//
+	is_parse_text    bool // true for files, produced by parse_text
+	is_template_text bool // true for files, produced by parse_comptime
 }
 
 @[unsafe]

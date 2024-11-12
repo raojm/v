@@ -90,8 +90,8 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 	mut pub_mut_pos := -1
 	mut global_pos := -1
 	mut module_pos := -1
-	mut is_field_mut := false
-	mut is_field_pub := false
+	mut is_field_mut := language == .c
+	mut is_field_pub := language == .c
 	mut is_field_global := false
 	mut is_implements := false
 	mut implements_types := []ast.TypeNode{cap: 3} // ast.void_type
@@ -122,7 +122,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 				end_comments = p.eat_comments(same_line: true)
 				break
 			}
-			if p.tok.kind == .key_pub {
+			if p.tok.kind == .key_pub && p.peek_tok.kind in [.key_mut, .colon] {
 				p.next()
 				if p.tok.kind == .key_mut {
 					if pub_mut_pos != -1 {
@@ -145,7 +145,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 					is_field_global = false
 				}
 				p.check(.colon)
-			} else if p.tok.kind == .key_mut {
+			} else if p.tok.kind == .key_mut && p.peek_tok.kind == .colon {
 				if mut_pos != -1 {
 					p.error('redefinition of `mut` section')
 					return ast.StructDecl{}
@@ -156,7 +156,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 				is_field_pub = false
 				is_field_mut = true
 				is_field_global = false
-			} else if p.tok.kind == .key_global {
+			} else if p.tok.kind == .key_global && p.peek_tok.kind == .colon {
 				if global_pos != -1 {
 					p.error('redefinition of `global` section')
 					return ast.StructDecl{}
@@ -167,7 +167,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 				is_field_pub = true
 				is_field_mut = true
 				is_field_global = true
-			} else if p.tok.kind == .key_module {
+			} else if p.tok.kind == .key_module && p.peek_tok.kind == .colon {
 				if module_pos != -1 {
 					p.error('redefinition of `module` section')
 					return ast.StructDecl{}
@@ -184,7 +184,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 			field_start_pos := p.tok.pos()
 			mut is_field_volatile := false
 			mut is_field_deprecated := false
-			if p.tok.kind == .key_volatile {
+			if p.tok.kind == .key_volatile && p.peek_token(2).line_nr == p.tok.line_nr {
 				p.next()
 				is_field_volatile = true
 			}
@@ -340,6 +340,7 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 				attrs:            p.attrs
 				is_pub:           is_embed || is_field_pub
 				is_mut:           is_embed || is_field_mut
+				is_embed:         is_embed
 				is_global:        is_field_global
 				is_volatile:      is_field_volatile
 				is_deprecated:    is_field_deprecated
@@ -503,6 +504,7 @@ fn (mut p Parser) struct_init(typ_str string, kind ast.StructInitKind, is_option
 				parent_type:      typ
 				has_prev_newline: has_prev_newline
 				has_break_line:   has_break_line
+				is_embed:         field_name.len > 0 && field_name[0].is_capital()
 			}
 		}
 	}

@@ -2091,7 +2091,7 @@ pub fn (mut f Fmt) call_expr(node ast.CallExpr) {
 			f.write('${node.name.after_char(`.`)}')
 		} else {
 			name := f.short_module(node.name)
-			if node.name.contains('__static__') {
+			if node.is_static_method {
 				f.write_static_method(node.name, name)
 			} else {
 				f.mark_import_as_used(name)
@@ -2363,15 +2363,13 @@ pub fn (mut f Fmt) ident(node ast.Ident) {
 			}
 		}
 		if !is_local && !node.name.contains('.') && !f.inside_const {
-			if obj := f.file.global_scope.find('${f.cur_mod}.${node.name}') {
-				if obj is ast.ConstField {
-					const_name := node.name.all_after_last('.')
-					f.write(const_name)
-					if node.or_expr.kind == .block {
-						f.or_expr(node.or_expr)
-					}
-					return
+			if _ := f.file.global_scope.find_const('${f.cur_mod}.${node.name}') {
+				const_name := node.name.all_after_last('.')
+				f.write(const_name)
+				if node.or_expr.kind == .block {
+					f.or_expr(node.or_expr)
 				}
+				return
 			}
 		}
 		name := f.short_module(node.name)
