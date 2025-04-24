@@ -278,7 +278,7 @@ pub fn vfopen(path string, mode string) !&C.FILE {
 	} $else {
 		fp = C.fopen(&char(path.str), &char(mode.str))
 	}
-	if isnil(fp) {
+	if isnil(voidptr(fp)) {
 		return error_posix(msg: 'failed to open file "${path}"')
 	} else {
 		return fp
@@ -500,44 +500,80 @@ fn print_c_errno() {
 }
 
 // get_raw_line returns a one-line string from stdin along with '\n' if there is any.
+@[manualfree]
 pub fn get_raw_line() string {
 	$if windows {
+		is_console := is_atty(0) > 0
+		wide_char_size := if is_console { 2 } else { 1 }
+		h_input := C.GetStdHandle(C.STD_INPUT_HANDLE)
+		if h_input == C.INVALID_HANDLE_VALUE {
+			return ''
+		}
 		unsafe {
-			max_line_chars := 256
-			buf := malloc_noscan(max_line_chars * 2)
-			h_input := C.GetStdHandle(C.STD_INPUT_HANDLE)
-			mut bytes_read := u32(0)
-			if is_atty(0) > 0 {
-				x := C.ReadConsole(h_input, buf, max_line_chars * 2, voidptr(&bytes_read),
-					0)
-				if !x {
-					return tos(buf, 0)
-				}
-				return string_from_wide2(&u16(buf), int(bytes_read))
-			}
+			initial_size := 256 * wide_char_size
+			mut buf := malloc_noscan(initial_size)
+			defer { buf.free() }
+			mut capacity := initial_size
 			mut offset := 0
+
 			for {
-				pos := buf + offset
-				res := C.ReadFile(h_input, pos, 1, voidptr(&bytes_read), 0)
-				if !res && offset == 0 {
-					return tos(buf, 0)
+				required_space := offset + wide_char_size
+				if required_space > capacity {
+					new_capacity := capacity * 2
+					new_buf := realloc_data(buf, capacity, new_capacity)
+					if new_buf == 0 {
+						break
+					}
+					buf = new_buf
+					capacity = new_capacity
 				}
+
+				pos := buf + offset
+				mut bytes_read := u32(0)
+				res := if is_console {
+					C.ReadConsole(h_input, pos, 1, voidptr(&bytes_read), 0)
+				} else {
+					C.ReadFile(h_input, pos, 1, voidptr(&bytes_read), 0)
+				}
+
 				if !res || bytes_read == 0 {
 					break
 				}
-				if *pos == `\n` {
-					offset++
-					break
+
+				// check for `\n` and Ctrl+Z
+				if is_console {
+					read_char := *(&u16(pos))
+					if read_char == `\n` {
+						offset += wide_char_size
+						break
+					} else if read_char == 0x1A {
+						break
+					}
+				} else {
+					read_byte := *pos
+					if read_byte == `\n` {
+						offset += wide_char_size
+						break
+					} else if read_byte == 0x1A {
+						break
+					}
 				}
-				offset++
+
+				offset += wide_char_size
 			}
-			return buf.vstring_with_len(offset)
+
+			return if is_console {
+				string_from_wide2(&u16(buf), offset / 2)
+			} else {
+				// let defer buf.free() to avoid memory leak
+				buf.vstring_with_len(offset).clone()
+			}
 		}
 	} $else {
 		max := usize(0)
-		buf := &char(0)
-		nr_chars := unsafe { C.getline(&buf, &max, C.stdin) }
-		str := unsafe { tos(&u8(buf), if nr_chars < 0 { 0 } else { nr_chars }) }
+		buf := unsafe { &u8(0) }
+		nr_chars := unsafe { C.getline(voidptr(&buf), &max, C.stdin) }
+		str := unsafe { tos(buf, if nr_chars < 0 { 0 } else { nr_chars }) }
 		ret := str.clone()
 		$if !autofree {
 			unsafe {
@@ -580,8 +616,8 @@ pub fn get_raw_stdin() []u8 {
 		}
 	} $else {
 		max := usize(0)
-		buf := &char(0)
-		nr_chars := unsafe { C.getline(&buf, &max, C.stdin) }
+		buf := unsafe { &u8(0) }
+		nr_chars := unsafe { C.getline(voidptr(&buf), &max, C.stdin) }
 		return array{
 			element_size: 1
 			data:         voidptr(buf)
@@ -606,7 +642,7 @@ pub fn read_file_array[T](path string) []T {
 	// On some systems C.ftell can return values in the 64-bit range
 	// that, when cast to `int`, can result in values below 0.
 	if i64(allocate) < fsize {
-		panic('${fsize} cast to int results in ${int(fsize)})')
+		panic_n2('cast to int results in (fsize, int(fsize)):', i64(fsize), i64(int(fsize)))
 	}
 	buf := unsafe {
 		malloc_noscan(allocate)
@@ -692,7 +728,7 @@ pub fn executable() string {
 		mib := [C.CTL_KERN, C.KERN_PROC_ARGS, pid, C.KERN_PROC_ARGV]!
 		if unsafe { C.sysctl(&mib[0], mib.len, C.NULL, &bufsize, C.NULL, 0) } == 0 {
 			if bufsize > max_path_buffer_size {
-				pbuf = unsafe { &&u8(malloc(bufsize)) }
+				pbuf = unsafe { &&u8(malloc(int(bufsize))) }
 				defer {
 					unsafe { free(pbuf) }
 				}
@@ -1016,6 +1052,7 @@ pub fn write_file_array(path string, buffer array) ! {
 	f.close()
 }
 
+@[manualfree]
 pub fn glob(patterns ...string) ![]string {
 	mut matches := []string{}
 	for pattern in patterns {
@@ -1025,6 +1062,8 @@ pub fn glob(patterns ...string) ![]string {
 	return matches
 }
 
+// last_error returns a V error, formed by the last libc error (from GetLastError() on windows and from `errno` on !windows)
+@[manualfree]
 pub fn last_error() IError {
 	$if windows {
 		code := int(C.GetLastError())
@@ -1050,7 +1089,7 @@ pub:
 // Return a POSIX error:
 // Code defaults to last error (from C.errno)
 // Message defaults to POSIX error message for the error code
-@[inline]
+@[inline; manualfree]
 pub fn error_posix(e SystemError) IError {
 	code := if e.code == error_code_not_set { C.errno } else { e.code }
 	message := if e.msg == '' { posix_get_error_msg(code) } else { e.msg }
@@ -1060,7 +1099,7 @@ pub fn error_posix(e SystemError) IError {
 // Return a Win32 API error:
 // Code defaults to last error (calling C.GetLastError())
 // Message defaults to Win 32 API error message for the error code
-@[inline]
+@[inline; manualfree]
 pub fn error_win32(e SystemError) IError {
 	$if windows {
 		code := if e.code == error_code_not_set { int(C.GetLastError()) } else { e.code }
@@ -1069,4 +1108,11 @@ pub fn error_win32(e SystemError) IError {
 	} $else {
 		panic('Win32 API not available on this platform.')
 	}
+}
+
+pub struct DiskUsage {
+pub:
+	total     u64
+	available u64
+	used      u64
 }

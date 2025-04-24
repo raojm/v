@@ -1,3 +1,4 @@
+// vtest build: !solaris
 import sokol.sapp
 import sokol.gfx
 import sokol.sgl
@@ -22,8 +23,8 @@ fn main() {
 		user_data:         state
 		init_userdata_cb:  init
 		frame_userdata_cb: frame
-		window_title:      title.str
-		html5_canvas_name: title.str
+		window_title:      &char(title.str)
+		html5_canvas_name: &char(title.str)
 	}
 	sapp.run(&desc)
 }
@@ -39,7 +40,7 @@ fn init(mut state AppState) {
 		'RobotoMono-Regular.ttf')))
 	{
 		println('loaded font: ${bytes.len}')
-		state.font_normal = state.font_context.add_font_mem('sans', bytes, false)
+		state.font_normal = state.font_context.add_font_mem('sans', bytes.clone(), true)
 	}
 }
 

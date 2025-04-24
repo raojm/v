@@ -103,16 +103,6 @@ pub struct C._utimbuf {
 
 fn C._utime(&char, voidptr) int
 
-@[deprecated: 'os.args now uses arguments()']
-@[deprecated_after: '2024-07-30']
-fn init_os_args_wide(argc int, argv &&u8) []string {
-	mut args_ := []string{len: argc}
-	for i in 0 .. argc {
-		args_[i] = unsafe { string_from_wide(&u16(argv[i])) }
-	}
-	return args_
-}
-
 fn native_glob_pattern(pattern string, mut matches []string) ! {
 	$if debug {
 		// FindFirstFile() and FindNextFile() both have a globbing function.
@@ -610,4 +600,27 @@ pub fn page_size() int {
 	sinfo := C.SYSTEM_INFO{}
 	C.GetSystemInfo(&sinfo)
 	return int(sinfo.dwPageSize)
+}
+
+// disk_usage returns disk usage of `path`
+pub fn disk_usage(path string) !DiskUsage {
+	mut free_bytes_available_to_caller := u64(0)
+	mut total := u64(0)
+	mut available := u64(0)
+	mut ret := false
+	if path == '.' || path == '' {
+		ret = C.GetDiskFreeSpaceExA(&char(0), &free_bytes_available_to_caller, &total,
+			&available)
+	} else {
+		ret = C.GetDiskFreeSpaceExA(&char(path.str), &free_bytes_available_to_caller,
+			&total, &available)
+	}
+	if ret == false {
+		return error('cannot get disk usage of path')
+	}
+	return DiskUsage{
+		total:     total
+		available: available
+		used:      total - available
+	}
 }

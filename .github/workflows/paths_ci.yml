@@ -11,12 +11,12 @@ on:
       - '!**/paths_ci.yml'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
+  group: paths-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   space-paths-linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +25,21 @@ jobs:
           path: '你好 my $path, @с интервали'
       - name: Build V
         run: |
+          # shellcheck disable=SC2016
           echo '你好 my $path, @с интервали'
           ls -la
+          # shellcheck disable=SC2016
           cd '你好 my $path, @с интервали'
           ls -la
           make
       - name: v doctor
         run: |
+          # shellcheck disable=SC2016
           cd '你好 my $path, @с интервали'
           ./v doctor
       - name: v tests
         run: |
+          # shellcheck disable=SC2016
           cd '你好 my $path, @с интервали'
           ./v test vlib/builtin vlib/os
 
@@ -49,8 +53,10 @@ jobs:
           persist-credentials: false
       - name: Build V
         run: |
+          # shellcheck disable=SC2016
           echo '你好 my $path, @с интервали'
           ls -la
+          # shellcheck disable=SC2016
           cd '你好 my $path, @с интервали'
           ls -la
           make
@@ -59,10 +65,12 @@ jobs:
           ./v -b js run examples/hello_world.v
       - name: v doctor
         run: |
+          # shellcheck disable=SC2016
           cd '你好 my $path, @с интервали'
           ./v doctor
       - name: v tests
         run: |
+          # shellcheck disable=SC2016
           cd '你好 my $path, @с интервали'
           ./v test vlib/builtin vlib/os
 

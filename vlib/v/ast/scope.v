@@ -61,21 +61,23 @@ pub fn (s &Scope) find(name string) ?ScopeObject {
 }
 
 // selector_expr:  name.field_name
-pub fn (s &Scope) find_struct_field(name string, struct_type Type, field_name string) ?ScopeStructField {
+pub fn (s &Scope) find_struct_field(name string, struct_type Type, field_name string) &ScopeStructField {
 	if s == unsafe { nil } {
-		return none
+		return unsafe { nil }
 	}
 	for sc := unsafe { s }; true; sc = sc.parent {
 		if field := sc.struct_fields[name] {
 			if field.struct_type == struct_type && field.name == field_name {
-				return field
+				return &ScopeStructField{
+					...field
+				}
 			}
 		}
 		if sc.dont_lookup_parent() {
 			break
 		}
 	}
-	return none
+	return unsafe { nil }
 }
 
 pub fn (s &Scope) find_var(name string) ?&Var {
@@ -158,14 +160,14 @@ pub fn (mut s Scope) register_struct_field(name string, field ScopeStructField) 
 }
 
 pub fn (mut s Scope) register(obj ScopeObject) {
-	if obj.name == '_' || obj.name in s.objects {
-		return
+	if !(obj.name == '_' || obj.name in s.objects) {
+		s.objects[obj.name] = obj
 	}
-	s.objects[obj.name] = obj
 }
 
 // returns the innermost scope containing pos
 // pub fn (s &Scope) innermost(pos int) ?&Scope {
+@[direct_array_access]
 pub fn (s &Scope) innermost(pos int) &Scope {
 	if s.contains(pos) {
 		// binary search
@@ -260,6 +262,17 @@ pub fn (sc &Scope) show(depth int, max_depth int) string {
 		}
 	}
 	return out
+}
+
+pub fn (mut sc Scope) mark_var_as_used(varname string) bool {
+	mut obj := sc.find(varname) or { return false }
+	if mut obj is Var {
+		obj.is_used = true
+		return true
+	} else if obj is GlobalField {
+		return true
+	}
+	return false
 }
 
 pub fn (sc &Scope) str() string {

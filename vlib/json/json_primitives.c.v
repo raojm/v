@@ -8,6 +8,15 @@ module json
 #include "cJSON.h"
 #define js_get(object, key) cJSON_GetObjectItemCaseSensitive((object), (key))
 
+// As cJSON use `libm`, we need to link it.
+$if windows {
+	$if tinyc {
+		#flag @VEXEROOT/thirdparty/tcc/lib/openlibm.o
+	}
+} $else {
+	#flag -lm
+}
+
 pub struct C.cJSON {
 	valueint    int
 	valuedouble f64
@@ -252,13 +261,20 @@ fn json_parse(s string) &C.cJSON {
 @[markused]
 fn json_print(data &C.cJSON) string {
 	s := C.cJSON_PrintUnformatted(data)
+	if s == unsafe { nil } {
+		return ''
+	}
 	r := unsafe { tos_clone(&u8(s)) }
 	C.cJSON_free(s)
 	return r
 }
 
+@[markused]
 fn json_print_pretty(data &C.cJSON) string {
 	s := C.cJSON_Print(data)
+	if s == unsafe { nil } {
+		return ''
+	}
 	r := unsafe { tos_clone(&u8(s)) }
 	C.cJSON_free(s)
 	return r

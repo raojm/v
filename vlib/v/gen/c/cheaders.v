@@ -56,7 +56,7 @@ static inline void __sort_ptr(uintptr_t a[], bool b[], int l) {
 
 fn c_closure_helpers(pref_ &pref.Preferences) string {
 	mut builder := strings.new_builder(2048)
-	if pref_.os != .windows {
+	if pref_.os != .windows && pref_.is_bare == false {
 		builder.writeln('#include <sys/mman.h>')
 	}
 
@@ -113,15 +113,15 @@ static char __CLOSURE_GET_DATA_BYTES[] = {
 static char __closure_thunk[] = {
 	0x04, 0xC0, 0x4F, 0xE2,  // adr ip, here
                              // here:
-	0x01, 0xC9, 0x4C, 0xE2,  // sub  ip, ip, #4000
+	0x01, 0xC9, 0x4C, 0xE2,  // sub  ip, ip, #0x4000
 	0x90, 0xCA, 0x07, 0xEE,  // vmov s15, ip
 	0x00, 0xC0, 0x9C, 0xE5,  // ldr  ip, [ip, 0]
 	0x1C, 0xFF, 0x2F, 0xE1   // bx   ip
 };
 static char __CLOSURE_GET_DATA_BYTES[] = {
-	0x90, 0x0A, 0x17, 0xEE,
-	0x04, 0x00, 0x10, 0xE5,
-	0x1E, 0xFF, 0x2F, 0xE1
+	0x90, 0x0A, 0x17, 0xEE,  // vmov r0, s15
+	0x04, 0x00, 0x10, 0xE5,  // ldr r0, [r0, #-4]
+	0x1E, 0xFF, 0x2F, 0xE1   // bx lr
 };
 #elif defined (__V_rv64)
 static char __closure_thunk[] = {
@@ -143,6 +143,33 @@ static char __CLOSURE_GET_DATA_BYTES[] = {
 	0x03, 0xA5, 0x0F, 0x00,  // lw    a0, 0(t6)
 	0x67, 0x80, 0x00, 0x00   // ret
 };
+#elif defined (__V_s390x)
+static char __closure_thunk[] = {
+	0xC0, 0x30, 0xFF, 0xFF, 0xE0, 0x00,  // larl %r3, -16384
+	0xE3, 0x40, 0x30, 0x00, 0x00, 0x04,  // lg   %r4, 0(%r3)
+	0xE3, 0x30, 0x30, 0x08, 0x00, 0x04,  // lg   %r3, 8(%r3)
+	0x07, 0xF3,			     // br   %r3
+};
+static char __CLOSURE_GET_DATA_BYTES[] = {
+	0xB9, 0x04, 0x00, 0x24,		     // lgr  %r2, %r4
+	0x07, 0xFE,			     // br   %r14
+};
+#elif defined (__V_ppc64le)
+static char __closure_thunk[] = {
+	0xa6, 0x02, 0x08, 0x7c,	// mflr   %r0
+	0x05, 0x00, 0x00, 0x48,	// bl     here
+	0xa6, 0x02, 0xc8, 0x7d,	// here:  mflr %r14
+	0xf8, 0xbf, 0xce, 0x39,	// addi   %r14, %r14, -16392
+	0x00, 0x00, 0xce, 0xc9,	// lfd    %f14, 0(%r14)
+	0x08, 0x00, 0xce, 0xe9,	// ld     %r14, 8(%r14)
+	0xa6, 0x03, 0x08, 0x7c,	// mtlr   %r0
+	0xa6, 0x03, 0xc9, 0x7d,	// mtctr  %r14
+	0x20, 0x04, 0x80, 0x4e,	// bctr
+};
+static char __CLOSURE_GET_DATA_BYTES[] = {
+	0x66, 0x00, 0xc3, 0x7d,	// mfvsrd %r3, %f14
+	0x20, 0x00, 0x80, 0x4e,	// blr
+};
 #endif
 
 static void*(*__CLOSURE_GET_DATA)(void) = 0;
@@ -163,18 +190,34 @@ static SRWLOCK _closure_mtx;
 #define _closure_mtx_init() InitializeSRWLock(&_closure_mtx)
 #define _closure_mtx_lock() AcquireSRWLockExclusive(&_closure_mtx)
 #define _closure_mtx_unlock() ReleaseSRWLockExclusive(&_closure_mtx)
+#elif defined(_VFREESTANDING)
+#define _closure_mtx_init()
+#define _closure_mtx_lock()
+#define _closure_mtx_unlock()
 #else
 static pthread_mutex_t _closure_mtx;
 #define _closure_mtx_init() pthread_mutex_init(&_closure_mtx, 0)
 #define _closure_mtx_lock() pthread_mutex_lock(&_closure_mtx)
 #define _closure_mtx_unlock() pthread_mutex_unlock(&_closure_mtx)
 #endif
-static char* _closure_ptr = 0;
-static int _closure_cap = 0;
+')
+	return builder.str()
+}
+
+fn c_closure_fn_helpers(pref_ &pref.Preferences) string {
+	static_non_parallel := if pref_.parallel_cc { '' } else { 'static ' }
+
+	mut builder := strings.new_builder(2048)
+	builder.write_string('
+	${static_non_parallel}char* _closure_ptr = 0;
+	${static_non_parallel}int _closure_cap = 0;
 
 static void __closure_alloc(void) {
 #ifdef _WIN32
 	char* p = VirtualAlloc(NULL, _V_page_size * 2, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (p == NULL) return;
+#elif defined(_VFREESTANDING)
+	char *p = malloc(_V_page_size * 2);
 	if (p == NULL) return;
 #else
 	char* p = mmap(0, _V_page_size * 2, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
@@ -192,6 +235,7 @@ static void __closure_alloc(void) {
 #ifdef _WIN32
 	DWORD _tmp;
 	VirtualProtect(_closure_ptr, _V_page_size, PAGE_EXECUTE_READ, &_tmp);
+#elif defined(_VFREESTANDING)
 #else
 	mprotect(_closure_ptr, _V_page_size, PROT_READ | PROT_EXEC);
 #endif
@@ -213,21 +257,29 @@ void __closure_init() {
 	_closure_cap--;
 }
 #else
-void __closure_init() {
+${static_non_parallel}void __closure_init() {
+#ifndef _VFREESTANDING
 	uint32_t page_size = sysconf(_SC_PAGESIZE);
+#else
+	uint32_t page_size = 0x4000;
+#endif
 	page_size = page_size * (((ASSUMED_PAGE_SIZE - 1) / page_size) + 1);
 	_V_page_size = page_size;
 	__closure_alloc();
+#ifndef _VFREESTANDING
 	mprotect(_closure_ptr, page_size, PROT_READ | PROT_WRITE);
+#endif
 	memcpy(_closure_ptr, __CLOSURE_GET_DATA_BYTES, sizeof(__CLOSURE_GET_DATA_BYTES));
+#ifndef _VFREESTANDING
 	mprotect(_closure_ptr, page_size, PROT_READ | PROT_EXEC);
+#endif
 	__CLOSURE_GET_DATA = (void*)_closure_ptr;
 	_closure_ptr += _CLOSURE_SIZE;
 	_closure_cap--;
 }
 #endif
 
-static void* __closure_create(void* fn, void* data) {
+${static_non_parallel}void* __closure_create(void* fn, void* data) {
 	_closure_mtx_lock();
 	if (_closure_cap == 0) {
 		__closure_alloc();
@@ -292,6 +344,18 @@ const c_common_macros = '
 	#define __V_architecture 6
 #endif
 
+#if defined(__s390x__)
+	#define __V_s390x  1
+	#undef __V_architecture
+	#define __V_architecture 7
+#endif
+
+#if defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)
+	#define __V_ppc64le  1
+	#undef __V_architecture
+	#define __V_architecture 8
+#endif
+
 // Using just __GNUC__ for detecting gcc, is not reliable because other compilers define it too:
 #ifdef __GNUC__
 	#define __V_GCC__
@@ -353,22 +417,14 @@ const c_common_macros = '
 
 // for __offset_of
 #ifndef __offsetof
+#if defined(__TINYC__) || defined(_MSC_VER)
 	#define __offsetof(PTYPE,FIELDNAME) ((size_t)(&((PTYPE *)0)->FIELDNAME))
+#else
+	#define __offsetof(st, m) __builtin_offsetof(st, m)
+#endif
 #endif
 
 #define OPTION_CAST(x) (x)
-
-#ifndef V64_PRINTFORMAT
-	#ifdef PRIx64
-		#define V64_PRINTFORMAT "0x%"PRIx64
-	#elif defined(__WIN32__)
-		#define V64_PRINTFORMAT "0x%I64x"
-	#elif defined(__linux__) && defined(__LP64__)
-		#define V64_PRINTFORMAT "0x%lx"
-	#else
-		#define V64_PRINTFORMAT "0x%llx"
-	#endif
-#endif
 
 #if defined(_WIN32) || defined(__CYGWIN__)
 	#define VV_EXPORTED_SYMBOL extern __declspec(dllexport)
@@ -527,11 +583,16 @@ typedef int (*qsort_callback_func)(const void*, const void*);
 int load_so(byteptr);
 void _vinit(int ___argc, voidptr ___argv);
 void _vcleanup(void);
+#ifdef _WIN32
+	// workaround for windows, export _vinit_caller/_vcleanup_caller, let dl.open()/dl.close() call it
+	// NOTE: This is hardcoded in vlib/dl/dl_windows.c.v!
+	VV_EXPORTED_SYMBOL void _vinit_caller();
+	VV_EXPORTED_SYMBOL void _vcleanup_caller();
+#endif
 #define sigaction_size sizeof(sigaction);
 #define _ARR_LEN(a) ( (sizeof(a)) / (sizeof(a[0])) )
 
 void v_free(voidptr ptr);
-//voidptr memdup(voidptr src, isize sz);
 
 #if INTPTR_MAX == INT32_MAX
 	#define TARGET_IS_32BIT 1
@@ -652,7 +713,7 @@ static void* g_live_info = NULL;
 
 const c_builtin_types = '
 //================================== builtin types ================================*/
-#if defined(__x86_64__) || defined(_M_AMD64) || defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64) || (defined(__riscv_xlen) && __riscv_xlen == 64)
+#if defined(__x86_64__) || defined(_M_AMD64) || defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64) || (defined(__riscv_xlen) && __riscv_xlen == 64) || defined(__s390x__) || (defined(__powerpc64__) && defined(__LITTLE_ENDIAN__))
 typedef int64_t vint_t;
 #else
 typedef int32_t vint_t;

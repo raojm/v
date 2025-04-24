@@ -25,10 +25,7 @@ pub mut:
 @[direct_array_access]
 pub fn (km &KeywordsMatcherTrie) find(word string) int {
 	wlen := word.len
-	if wlen < km.min_len {
-		return -1
-	}
-	if wlen > km.max_len {
+	if wlen < km.min_len || wlen > km.max_len {
 		return -1
 	}
 	node := km.nodes[wlen]
@@ -163,7 +160,7 @@ pub fn (root &TrieNode) find(word string) int {
 		if child == unsafe { nil } {
 			return -1
 		}
-		node = child
+		node = unsafe { child }
 		idx++
 	}
 	return -1

@@ -925,7 +925,7 @@ pub fn (mut t Transformer) infix_expr(mut node ast.InfixExpr) ast.Expr {
 							}
 							.left_shift {
 								return ast.IntegerLiteral{
-									val: (u32(left_val) << right_val).str()
+									val: (unsafe { left_val << right_val }).str()
 									pos: pos
 								}
 							}
@@ -937,7 +937,7 @@ pub fn (mut t Transformer) infix_expr(mut node ast.InfixExpr) ast.Expr {
 							}
 							.unsigned_right_shift {
 								return ast.IntegerLiteral{
-									val: (left_val >>> right_val).str()
+									val: (u64(left_val) >>> right_val).str()
 									pos: pos
 								}
 							}
@@ -1034,14 +1034,14 @@ pub fn (mut t Transformer) if_expr(mut node ast.IfExpr) ast.Expr {
 					match expr {
 						ast.IfExpr {
 							if expr.branches.len == 1 {
-								branch.stmts.pop()
+								branch.stmts.delete(branch.stmts.len - 1)
 								branch.stmts << expr.branches[0].stmts
 								break
 							}
 						}
 						ast.MatchExpr {
 							if expr.branches.len == 1 {
-								branch.stmts.pop()
+								branch.stmts.delete(branch.stmts.len - 1)
 								branch.stmts << expr.branches[0].stmts
 								break
 							}
@@ -1075,14 +1075,14 @@ pub fn (mut t Transformer) match_expr(mut node ast.MatchExpr) ast.Expr {
 					match expr {
 						ast.IfExpr {
 							if expr.branches.len == 1 {
-								branch.stmts.pop()
+								branch.stmts.delete(branch.stmts.len - 1)
 								branch.stmts << expr.branches[0].stmts
 								break
 							}
 						}
 						ast.MatchExpr {
 							if expr.branches.len == 1 {
-								branch.stmts.pop()
+								branch.stmts.delete(branch.stmts.len - 1)
 								branch.stmts << expr.branches[0].stmts
 								break
 							}

@@ -77,8 +77,11 @@ fn (mut g Gen) struct_init(node ast.StructInit) {
 			g.write(')')
 		}
 	}
-	if is_anon {
-		g.writeln('(${styp}){')
+	if is_anon && !node.typ.has_flag(.option) {
+		if node.language == .v {
+			g.write('(${styp})')
+		}
+		g.writeln('{')
 	} else if g.is_shared && !g.inside_opt_data && !g.is_arraymap_set {
 		mut shared_typ := node.typ.set_flag(.shared_f)
 		shared_styp = g.styp(shared_typ)
@@ -197,7 +200,11 @@ fn (mut g Gen) struct_init(node ast.StructInit) {
 				embed_sym := g.table.sym(embed)
 				embed_name := embed_sym.embed_name()
 				if embed_name !in inited_fields {
-					embed_info := embed_sym.info as ast.Struct
+					embed_info := if embed_sym.info is ast.Struct {
+						embed_sym.info
+					} else {
+						g.table.final_sym(embed).info as ast.Struct
+					}
 					embed_field_names := embed_info.fields.map(it.name)
 					fields_to_embed := init_fields_to_embed.filter(it.name !in used_embed_fields
 						&& it.name in embed_field_names)
@@ -229,8 +236,9 @@ fn (mut g Gen) struct_init(node ast.StructInit) {
 			g.is_shared = field.typ.has_flag(.shared_f)
 			if mut sym.info is ast.Struct {
 				mut found_equal_fields := 0
+				field_name, field_name_len := field.name, field.name.len
 				for mut sifield in sym.info.fields {
-					if sifield.name == field.name {
+					if sifield.name.len == field_name_len && sifield.name == field_name {
 						found_equal_fields++
 						break
 					}
@@ -300,36 +308,35 @@ fn (mut g Gen) struct_init(node ast.StructInit) {
 				continue
 			}
 			if node.has_update_expr {
+				mut is_arr_fixed := false
 				g.write('.${field_name} = ')
 				if is_update_tmp_var {
 					g.write(tmp_update_var)
 				} else {
-					g.write('(')
-					g.expr(node.update_expr)
-					g.write(')')
-				}
-				if node.update_expr_type.is_ptr() {
-					g.write('->')
-				} else {
-					g.write('.')
-				}
-				if node.is_update_embed {
-					update_sym := g.table.sym(node.update_expr_type)
-					_, embeds := g.table.find_field_from_embeds(update_sym, field.name) or {
-						ast.StructField{}, []ast.Type{}
-					}
-					for embed in embeds {
-						esym := g.table.sym(embed)
-						ename := esym.embed_name()
-						g.write(ename)
-						if embed.is_ptr() {
-							g.write('->')
-						} else {
-							g.write('.')
-						}
+					update_expr_sym := g.table.final_sym(field.typ)
+					if update_expr_sym.info is ast.ArrayFixed {
+						is_arr_fixed = true
+						g.fixed_array_update_expr_field(g.expr_string(node.update_expr),
+							node.update_expr_type, field.name, node.update_expr.is_auto_deref_var(),
+							update_expr_sym.info.elem_type, update_expr_sym.info.size,
+							node.is_update_embed)
+					} else {
+						g.write('(')
+						g.expr(node.update_expr)
+						g.write(')')
 					}
 				}
-				g.write(c_name(field.name))
+				if !is_arr_fixed {
+					if node.update_expr_type.is_ptr() {
+						g.write('->')
+					} else {
+						g.write('.')
+					}
+					if node.is_update_embed {
+						g.write(g.get_embed_field_name(node.update_expr_type, field.name))
+					}
+					g.write(c_name(field.name))
+				}
 			} else {
 				if !g.zero_struct_field(field) {
 					nr_fields--
@@ -389,6 +396,32 @@ fn (mut g Gen) struct_init(node ast.StructInit) {
 	}
 }
 
+fn (mut g Gen) get_embed_field_name(field_type ast.Type, field_name string) string {
+	update_sym := g.table.sym(field_type)
+	_, embeds := g.table.find_field_from_embeds(update_sym, field_name) or {
+		ast.StructField{}, []ast.Type{}
+	}
+	mut s := ''
+	for embed in embeds {
+		esym := g.table.sym(embed)
+		ename := esym.embed_name()
+		if embed.is_ptr() {
+			s += '${ename}->'
+		} else {
+			s += '${ename}.'
+		}
+	}
+	return s
+}
+
+fn (mut g Gen) init_shared_field(field ast.StructField) {
+	field_typ := field.typ.deref()
+	shared_styp := g.styp(field_typ)
+	g.write('(${shared_styp}*)__dup${shared_styp}(&(${shared_styp}){.mtx= {0}, .val=')
+	g.write(g.type_default(field_typ.clear_flag(.shared_f)))
+	g.write('}, sizeof(${shared_styp}))')
+}
+
 fn (mut g Gen) zero_struct_field(field ast.StructField) bool {
 	old_inside_cast_in_heap := g.inside_cast_in_heap
 	g.inside_cast_in_heap = 0
@@ -403,6 +436,11 @@ fn (mut g Gen) zero_struct_field(field ast.StructField) bool {
 			return false
 		} else if !field.has_default_expr {
 			mut has_option_field := false
+			if sym.info.is_shared || field.typ.has_flag(.shared_f) {
+				g.write('.${field_name} = ')
+				g.init_shared_field(field)
+				return true
+			}
 			for fd in sym.info.fields {
 				if fd.typ.has_flag(.option) {
 					has_option_field = true
@@ -411,7 +449,8 @@ fn (mut g Gen) zero_struct_field(field ast.StructField) bool {
 			}
 			if has_option_field || field.anon_struct_decl.fields.len > 0 {
 				default_init := ast.StructInit{
-					typ: field.typ
+					typ:      field.typ
+					language: field.anon_struct_decl.language
 				}
 				g.write('.${field_name} = ')
 				if field.typ.has_flag(.option) {
@@ -461,23 +500,11 @@ fn (mut g Gen) zero_struct_field(field ast.StructField) bool {
 				tmp_var)
 			return true
 		} else if final_sym.info is ast.ArrayFixed && field.default_expr !is ast.ArrayInit {
-			tmp_var := g.new_tmp_var()
-			s := g.go_before_last_stmt()
-			g.empty_line = true
-			styp := g.styp(field.typ)
-			g.writeln('${styp} ${tmp_var} = {0};')
-			g.write('memcpy(${tmp_var}, ')
-			g.expr(field.default_expr)
-			g.writeln(', sizeof(${styp}));')
-			g.empty_line = false
-			g.write2(s, '{')
-			for i in 0 .. final_sym.info.size {
-				g.write('${tmp_var}[${i}]')
-				if i != final_sym.info.size - 1 {
-					g.write(', ')
-				}
-			}
-			g.write('}')
+			old_inside_memset := g.inside_memset
+			g.inside_memset = true
+			tmp_var := g.expr_with_var(field.default_expr, field.default_expr_typ, field.default_expr !is ast.CallExpr)
+			g.fixed_array_var_init(tmp_var, false, final_sym.info.elem_type, final_sym.info.size)
+			g.inside_memset = old_inside_memset
 			return true
 		}
 		g.expr(field.default_expr)
@@ -488,25 +515,33 @@ fn (mut g Gen) zero_struct_field(field ast.StructField) bool {
 		g.write(g.type_default_sumtype(field.typ, sym))
 		return true
 	} else if sym.info is ast.ArrayFixed {
+		elem_is_option := sym.info.elem_type.has_flag(.option)
 		g.write('{')
-		for i in 0 .. sym.info.size {
-			if sym.info.elem_type.has_flag(.option) {
-				g.expr_with_opt(ast.None{}, ast.none_type, sym.info.elem_type)
-			} else {
-				g.write(g.type_default(sym.info.elem_type))
-			}
-			if i != sym.info.size - 1 {
-				g.write(', ')
+		if !elem_is_option && field.typ.has_flag(.shared_f) {
+			g.write('0')
+		} else {
+			default_str := g.type_default(sym.info.elem_type)
+			for i in 0 .. sym.info.size {
+				if elem_is_option {
+					g.gen_option_error(sym.info.elem_type, ast.None{})
+				} else {
+					g.write(default_str)
+				}
+				if i != sym.info.size - 1 {
+					g.write(', ')
+				}
 			}
 		}
 		g.write('}')
+	} else if field.typ.has_flag(.shared_f) {
+		g.init_shared_field(field)
 	} else {
 		g.write(g.type_default(field.typ))
 	}
 	return true
 }
 
-fn (mut g Gen) struct_decl(s ast.Struct, name string, is_anon bool) {
+fn (mut g Gen) struct_decl(s ast.Struct, name string, is_anon bool, is_option bool) {
 	if s.is_generic {
 		return
 	}
@@ -550,7 +585,12 @@ fn (mut g Gen) struct_decl(s ast.Struct, name string, is_anon bool) {
 		}
 	}
 	if is_anon {
-		g.type_definitions.write_string('\t${name} ')
+		option_prefix := if is_option { '_option_' } else { '' }
+		if s.is_shared {
+			g.type_definitions.write_string('\t${option_prefix}__shared__${name}* ')
+		} else {
+			g.type_definitions.write_string('\t${option_prefix}${name} ')
+		}
 		return
 	} else if s.is_union {
 		if g.is_cc_msvc && aligned_attr != '' {
@@ -632,7 +672,7 @@ fn (mut g Gen) struct_decl(s ast.Struct, name string, is_anon bool) {
 				if field_sym.info.is_anon {
 					field_is_anon = true
 					// Recursively generate code for this anon struct (this is the field's type)
-					g.struct_decl(field_sym.info, field_sym.cname, true)
+					g.struct_decl(field_sym.info, field_sym.cname, true, field.typ.has_flag(.option))
 					// Now the field's name
 					g.type_definitions.writeln(' ${field_name}${size_suffix};')
 				}
@@ -668,7 +708,6 @@ fn (mut g Gen) struct_init_field(sfield ast.StructInitField, language ast.Langua
 	field_type_sym := g.table.sym(sfield.typ)
 	mut cloned := false
 	if g.is_autofree && !sfield.typ.is_ptr() && field_type_sym.kind in [.array, .string] {
-		g.write('/*clone1*/')
 		if g.gen_clone_assignment(sfield.expected_type, sfield.expr, sfield.typ, false) {
 			cloned = true
 		}
@@ -679,33 +718,58 @@ fn (mut g Gen) struct_init_field(sfield ast.StructInitField, language ast.Langua
 
 		field_unwrap_typ := g.unwrap_generic(sfield.typ)
 		field_unwrap_sym := g.table.final_sym(field_unwrap_typ)
-		if field_unwrap_sym.kind == .array_fixed && sfield.expr in [ast.Ident, ast.SelectorExpr] {
-			info := field_unwrap_sym.info as ast.ArrayFixed
-			g.fixed_array_var_init(g.expr_string(sfield.expr), sfield.expr.is_auto_deref_var(),
-				info.elem_type, info.size)
-		} else if field_unwrap_sym.kind == .array_fixed && (sfield.expr is ast.CallExpr
-			|| (sfield.expr is ast.ArrayInit && sfield.expr.has_index)) {
-			info := field_unwrap_sym.info as ast.ArrayFixed
-			tmp_var := g.expr_with_var(sfield.expr, sfield.typ, sfield.expected_type)
-			g.fixed_array_var_init(tmp_var, false, info.elem_type, info.size)
+		is_auto_deref_var := sfield.expr.is_auto_deref_var()
+		if field_unwrap_sym.info is ast.ArrayFixed && !sfield.expected_type.has_flag(.option) {
+			match sfield.expr {
+				ast.Ident, ast.SelectorExpr {
+					g.fixed_array_var_init(g.expr_string(sfield.expr), is_auto_deref_var,
+						field_unwrap_sym.info.elem_type, field_unwrap_sym.info.size)
+				}
+				ast.CastExpr, ast.CallExpr {
+					tmp_var := g.expr_with_var(sfield.expr, sfield.expected_type, false)
+					g.fixed_array_var_init(tmp_var, false, field_unwrap_sym.info.elem_type,
+						field_unwrap_sym.info.size)
+				}
+				ast.ArrayInit {
+					if sfield.expr.has_index {
+						tmp_var := g.expr_with_var(sfield.expr, sfield.expected_type,
+							false)
+						g.fixed_array_var_init(tmp_var, false, field_unwrap_sym.info.elem_type,
+							field_unwrap_sym.info.size)
+					} else if sfield.expr.has_callexpr {
+						tmp_var := g.expr_with_fixed_array(sfield.expr, sfield.typ, sfield.expected_type)
+						g.fixed_array_var_init(tmp_var, false, field_unwrap_sym.info.elem_type,
+							field_unwrap_sym.info.size)
+					} else {
+						g.struct_init_field_default(field_unwrap_typ, sfield)
+					}
+				}
+				else {
+					g.struct_init_field_default(field_unwrap_typ, sfield)
+				}
+			}
 		} else {
-			if field_unwrap_typ != ast.voidptr_type && field_unwrap_typ != ast.nil_type
-				&& (sfield.expected_type.is_ptr() && !sfield.expected_type.has_flag(.shared_f))
-				&& !sfield.expected_type.has_flag(.option)
-				&& !field_unwrap_typ.is_any_kind_of_pointer() && !field_unwrap_typ.is_number() {
-				g.write('/* autoref */&')
-			}
-
-			if (sfield.expected_type.has_flag(.option) && !field_unwrap_typ.has_flag(.option))
-				|| (sfield.expected_type.has_flag(.result) && !field_unwrap_typ.has_flag(.result)) {
-				g.expr_with_opt(sfield.expr, field_unwrap_typ, sfield.expected_type)
-			} else if sfield.expr is ast.LambdaExpr && sfield.expected_type.has_flag(.option) {
-				g.expr_opt_with_cast(sfield.expr, field_unwrap_typ, sfield.expected_type)
-			} else {
-				g.left_is_opt = true
-				g.expr_with_cast(sfield.expr, field_unwrap_typ, sfield.expected_type)
-			}
+			g.struct_init_field_default(field_unwrap_typ, sfield)
 		}
 		g.inside_cast_in_heap = inside_cast_in_heap // restore value for further struct inits
+	}
+}
+
+fn (mut g Gen) struct_init_field_default(field_unwrap_typ ast.Type, sfield &ast.StructInitField) {
+	if field_unwrap_typ != ast.voidptr_type && field_unwrap_typ != ast.nil_type
+		&& (sfield.expected_type.is_ptr() && !sfield.expected_type.has_flag(.shared_f))
+		&& !sfield.expected_type.has_flag(.option) && !field_unwrap_typ.is_any_kind_of_pointer()
+		&& !field_unwrap_typ.is_number() {
+		g.write('/* autoref */&')
+	}
+
+	if (sfield.expected_type.has_flag(.option) && !field_unwrap_typ.has_flag(.option))
+		|| (sfield.expected_type.has_flag(.result) && !field_unwrap_typ.has_flag(.result)) {
+		g.expr_with_opt(sfield.expr, field_unwrap_typ, sfield.expected_type)
+	} else if sfield.expr is ast.LambdaExpr && sfield.expected_type.has_flag(.option) {
+		g.expr_opt_with_cast(sfield.expr, field_unwrap_typ, sfield.expected_type)
+	} else {
+		g.left_is_opt = true
+		g.expr_with_cast(sfield.expr, field_unwrap_typ, sfield.expected_type)
 	}
 }

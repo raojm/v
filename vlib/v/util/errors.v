@@ -9,7 +9,6 @@ import strings
 import term
 import v.errors
 import v.token
-import v.mathutil as mu
 
 // The filepath:line:col: format is the default C compiler error output format.
 // It allows editors and IDE's like emacs to quickly find the errors in the
@@ -109,7 +108,7 @@ pub fn formatted_error(kind string, omsg string, filepath string, pos token.Pos)
 	emsg := omsg.replace('main.', '')
 	path := path_styled_for_error_messages(filepath)
 	position := if filepath != '' {
-		'${path}:${pos.line_nr + 1}:${mu.max(1, pos.col + 1)}:'
+		'${path}:${pos.line_nr + 1}:${int_max(1, pos.col + 1)}:'
 	} else {
 		''
 	}
@@ -152,13 +151,13 @@ pub fn source_file_context(kind string, filepath string, pos token.Pos) []string
 	if source_lines.len == 0 {
 		return clines
 	}
-	bline := mu.max(0, pos.line_nr - error_context_before)
-	aline := mu.max(0, mu.min(source_lines.len - 1, pos.line_nr + error_context_after))
+	bline := int_max(0, pos.line_nr - error_context_before)
+	aline := int_max(0, int_min(source_lines.len - 1, pos.line_nr + error_context_after))
 	tab_spaces := '    '
 	for iline := bline; iline <= aline; iline++ {
 		sline := source_lines[iline] or { '' }
-		start_column := mu.max(0, mu.min(pos.col, sline.len))
-		end_column := mu.max(0, mu.min(pos.col + mu.max(0, pos.len), sline.len))
+		start_column := int_max(0, int_min(pos.col, sline.len))
+		end_column := int_max(0, int_min(pos.col + int_max(0, pos.len), sline.len))
 		cline := if iline == pos.line_nr {
 			sline[..start_column] + color(kind, sline[start_column..end_column]) +
 				sline[end_column..]
@@ -201,13 +200,6 @@ pub fn verror(kind string, s string) {
 }
 
 pub fn vlines_escape_path(path string, ccompiler string) string {
-	is_cc_tcc := ccompiler.contains('tcc')
-	if is_cc_tcc {
-		// tcc currently has a bug, causing all #line files,
-		// to be prefixed with the *same folder as the .tmp.c file*
-		// this ../../ escaping, is a temporary workaround for that
-		return '../../../../../..' + cescaped_path(os.real_path(path))
-	}
 	return cescaped_path(os.real_path(path))
 }
 

@@ -19,6 +19,8 @@ const c_verror_message_marker = 'VERROR_MESSAGE '
 
 const current_os = os.user_os()
 
+const c_compilation_error_title = 'C compilation error'
+
 fn (mut v Builder) show_c_compiler_output(ccompiler string, res os.Result) {
 	header := '======== Output of the C Compiler (${ccompiler}) ========'
 	println(header)
@@ -57,14 +59,18 @@ fn (mut v Builder) post_process_c_compiler_output(ccompiler string, res os.Resul
 		} else {
 			trimmed_output := res.output.trim_space()
 			original_elines := trimmed_output.split_into_lines()
-			elines := error_context_lines(trimmed_output, 'error:', 1, 12)
-			header := '================== C compilation error (from ${ccompiler}): =============='
+			mlines := 12
+			cut_off_limit := if original_elines.len > mlines + 3 { mlines } else { mlines + 3 }
+			elines := error_context_lines(trimmed_output, 'error:', 1, cut_off_limit)
+			header := '================== ${c_compilation_error_title} (from ${ccompiler}): =============='
 			println(header)
 			for eline in elines {
 				println('cc: ${eline}')
 			}
 			if original_elines.len != elines.len {
-				println('... (the original output was ${original_elines.len} lines long, and was truncated to ${elines.len} lines)')
+				println('...')
+				println('cc: ${original_elines#[-1..][0]}')
+				println('(note: the original output was ${original_elines.len} lines long; it was truncated to its first ${elines.len} lines + the last line)')
 			}
 			println('='.repeat(header.len))
 			println('(You can pass `-cg`, or `-show-c-output` as well, to print all the C error messages).')
@@ -100,17 +106,18 @@ fn (mut v Builder) show_cc(cmd string, response_file string, response_file_conte
 	}
 }
 
-enum CC {
+pub enum CC {
 	tcc
 	gcc
 	icc
 	msvc
 	clang
+	emcc
 	unknown
 }
 
-struct CcompilerOptions {
-mut:
+pub struct CcompilerOptions {
+pub mut:
 	guessed_compiler string
 	shared_postfix   string // .so, .dll
 
@@ -152,6 +159,8 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 		'-Wno-int-to-pointer-cast', // gcc version of the above
 		'-Wno-trigraphs', // see stackoverflow.com/a/8435413
 		'-Wno-missing-braces', // see stackoverflow.com/q/13746033
+		'-Wno-enum-conversion', // silences `.dst_factor_rgb = sokol__gfx__BlendFactor__one_minus_src_alpha`
+		'-Wno-enum-compare', // silences `if (ev->mouse_button == sokol__sapp__MouseButton__left) {`
 		// enable additional warnings:
 		'-Wno-unknown-warning', // if a C compiler does not understand a certain flag, it should just ignore it
 		'-Wno-unknown-warning-option', // clang equivalent of the above
@@ -208,6 +217,7 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 			cc_file_name.contains('clang') || ccoptions.guessed_compiler == 'clang' { .clang }
 			cc_file_name.contains('msvc') || ccoptions.guessed_compiler == 'msvc' { .msvc }
 			cc_file_name.contains('icc') || ccoptions.guessed_compiler == 'icc' { .icc }
+			cc_file_name.contains('emcc') || ccoptions.guessed_compiler == 'emcc' { .emcc }
 			else { .unknown }
 			// vfmt on
 		}
@@ -235,6 +245,9 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 		$if windows {
 			have_flto = false
 		}
+		if v.pref.parallel_cc {
+			have_flto = false
+		}
 		if have_flto {
 			optimization_options << '-flto'
 		}
@@ -252,7 +265,14 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 				debug_options << '-no-pie'
 			}
 		}
-		optimization_options = ['-O3', '-flto']
+		optimization_options = ['-O3']
+		mut have_flto := true
+		if v.pref.parallel_cc {
+			have_flto = false
+		}
+		if have_flto {
+			optimization_options << '-flto'
+		}
 	}
 	if ccoptions.cc == .icc {
 		if ccoptions.debug_mode {
@@ -273,7 +293,9 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 			&& v.parsed_files.last().path.contains('vlib')) {
 			eprintln('Note: tcc is not recommended for -prod builds')
 		}
-		ccoptions.args << optimization_options
+		if !v.pref.no_prod_options {
+			ccoptions.args << optimization_options
+		}
 	}
 	if v.pref.is_prod && !ccoptions.debug_mode {
 		// sokol and other C libraries that use asserts
@@ -319,7 +341,10 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 		if ccoptions.cc != .tcc && current_os == 'macos' {
 			ccoptions.linker_flags << '-Wl,-export_dynamic' // clang for mac needs export_dynamic instead of -rdynamic
 		} else {
-			ccoptions.linker_flags << '-rdynamic' // needed for nicer symbolic backtraces
+			if v.pref.ccompiler != 'x86_64-w64-mingw32-gcc' {
+				// the mingw-w64-gcc cross compiler does not support -rdynamic, and windows/wine already does have nicer backtraces
+				ccoptions.linker_flags << '-rdynamic' // needed for nicer symbolic backtraces
+			}
 		}
 	}
 	if v.pref.os == .freebsd {
@@ -362,7 +387,9 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 		}
 	}
 	// The C file we are compiling
-	ccoptions.source_args << '"${v.out_name_c}"'
+	if !v.pref.parallel_cc { // parallel_cc uses its own split up c files
+		ccoptions.source_args << v.tcc_quoted_path(v.out_name_c)
+	}
 	// Min macos version is mandatory I think?
 	if v.pref.os == .macos {
 		if v.pref.macosx_version_min != '0' {
@@ -457,6 +484,17 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 
 fn (v &Builder) all_args(ccoptions CcompilerOptions) []string {
 	mut all := []string{}
+	all << v.only_compile_args(ccoptions)
+	all << v.only_linker_args(ccoptions)
+	return all
+}
+
+pub fn (v &Builder) get_compile_args() []string {
+	return v.only_compile_args(v.ccoptions)
+}
+
+fn (v &Builder) only_compile_args(ccoptions CcompilerOptions) []string {
+	mut all := []string{}
 	all << ccoptions.env_cflags
 	if v.pref.is_cstrict {
 		all << ccoptions.wargs
@@ -483,6 +521,15 @@ fn (v &Builder) all_args(ccoptions CcompilerOptions) []string {
 	all << ccoptions.pre_args
 	all << ccoptions.source_args
 	all << ccoptions.post_args
+	return all
+}
+
+pub fn (v &Builder) get_linker_args() []string {
+	return v.only_linker_args(v.ccoptions)
+}
+
+fn (v &Builder) only_linker_args(ccoptions CcompilerOptions) []string {
+	mut all := []string{}
 	// in `build-mode`, we do not need -lxyz flags, since we are
 	// building an (.o) object file, that will be linked later.
 	if v.pref.build_mode != .build_module {
@@ -534,7 +581,11 @@ fn (mut v Builder) thirdparty_object_args(ccoptions CcompilerOptions, middle []s
 	// all << ccoptions.env_ldflags
 	// all << ccoptions.ldflags
 	if cross_compiling_from_macos_to_linux {
-		all << '-I${os.quoted_path(sysroot)}/include' // add the system include/ folder after everything else, so that local folders like thirdparty/mbedtls have a chance to supply their own headers
+		// add the system include/ folder after everything else,
+		// so that local folders like thirdparty/mbedtls have a
+		// chance to supply their own headers
+		all << '-I'
+		all << os.quoted_path('${sysroot}/include')
 	}
 	return all
 }
@@ -564,9 +615,20 @@ fn (mut v Builder) setup_output_name() {
 		// println(v.ast.imports)
 	}
 	if os.is_dir(v.pref.out_name) {
-		verror("'${v.pref.out_name}' is a directory")
+		verror('${os.quoted_path(v.pref.out_name)} is a directory')
 	}
-	v.ccoptions.o_args << '-o "${v.pref.out_name}"'
+	if !v.pref.parallel_cc {
+		// parallel_cc sets its own `-o out_n.o`
+		v.ccoptions.o_args << '-o ${v.tcc_quoted_path(v.pref.out_name)}'
+	}
+}
+
+pub fn (mut v Builder) tcc_quoted_path(p string) string {
+	if v.ccoptions.cc == .tcc && !v.pref.no_rsp {
+		// tcc has a bug, that prevents it from being able to parse names quoted with ' in .rsp files :-|
+		return '"${p}"'
+	}
+	return os.quoted_path(p)
 }
 
 pub fn (mut v Builder) cc() {
@@ -574,7 +636,7 @@ pub fn (mut v Builder) cc() {
 		return
 	}
 	if v.pref.is_verbose {
-		println('builder.cc() pref.out_name="${v.pref.out_name}"')
+		println('builder.cc() pref.out_name=${os.quoted_path(v.pref.out_name)}')
 	}
 	if v.pref.only_check_syntax {
 		if v.pref.is_verbose {
@@ -598,9 +660,9 @@ pub fn (mut v Builder) cc() {
 	// whether to just create a .c or .js file and exit, for example: `v -o v.c cmd.v`
 	ends_with_c := v.pref.out_name.ends_with('.c')
 	ends_with_js := v.pref.out_name.ends_with('.js')
-	if ends_with_c || ends_with_js {
+	if ends_with_c || (ends_with_js && v.pref.os != .wasm32_emscripten) {
 		v.pref.skip_running = true
-		msg_mv := 'os.mv_by_cp ${v.out_name_c} => ${v.pref.out_name}'
+		msg_mv := 'os.mv_by_cp ${os.quoted_path(v.out_name_c)} => ${os.quoted_path(v.pref.out_name)}'
 		util.timing_start(msg_mv)
 		// v.out_name_c may be on a different partition than v.out_name
 		os.mv_by_cp(v.out_name_c, v.pref.out_name) or { panic(err) }
@@ -679,6 +741,12 @@ pub fn (mut v Builder) cc() {
 			all_args.join(' ')
 		}
 		mut cmd := '${v.quote_compiler_name(ccompiler)} ${str_args}'
+		if v.pref.parallel_cc {
+			// In parallel cc mode, all we want in cc() is build the str_args.
+			// Actual cc logic then happens in `parallel_cc()`
+			v.str_args = str_args
+			return
+		}
 		mut response_file := ''
 		mut response_file_content := str_args
 		if !v.pref.no_rsp {
@@ -762,16 +830,16 @@ pub fn (mut v Builder) cc() {
 		break
 	}
 	if v.pref.compress {
-		ret := os.system('strip ${v.pref.out_name}')
+		ret := os.system('strip ${os.quoted_path(v.pref.out_name)}')
 		if ret != 0 {
 			println('strip failed')
 			return
 		}
 		// Note: upx --lzma can sometimes fail with NotCompressibleException
 		// See https://github.com/vlang/v/pull/3528
-		mut ret2 := os.system('upx --lzma -qqq ${v.pref.out_name}')
+		mut ret2 := os.system('upx --lzma -qqq ${os.quoted_path(v.pref.out_name)}')
 		if ret2 != 0 {
-			ret2 = os.system('upx -qqq ${v.pref.out_name}')
+			ret2 = os.system('upx -qqq ${os.quoted_path(v.pref.out_name)}')
 		}
 		if ret2 != 0 {
 			println('upx failed')
@@ -803,7 +871,7 @@ fn (mut b Builder) ensure_linuxroot_exists(sysroot string) {
 	}
 	if !os.is_dir(sysroot) {
 		println('Downloading files for Linux cross compilation (~77MB) ...')
-		os.system('git clone ${crossrepo_url} ${sysroot}')
+		os.system('git clone "${crossrepo_url}" ${os.quoted_path(sysroot)}')
 		if !os.exists(sysroot_git_config_path) {
 			verror('Failed to clone `${crossrepo_url}` to `${sysroot}`')
 		}
@@ -820,7 +888,7 @@ fn (mut b Builder) ensure_freebsdroot_exists(sysroot string) {
 	}
 	if !os.is_dir(sysroot) {
 		println('Downloading files for FreeBSD cross compilation (~458MB) ...')
-		os.system('git clone ${crossrepo_url} ${sysroot}')
+		os.system('git clone "${crossrepo_url}" ${os.quoted_path(sysroot)}')
 		if !os.exists(sysroot_git_config_path) {
 			verror('Failed to clone `${crossrepo_url}` to `${sysroot}`')
 		}
@@ -851,13 +919,12 @@ fn (mut b Builder) cc_linux_cross() {
 	mut cc_args := []string{cap: 20}
 	cc_args << '-w'
 	cc_args << '-fPIC'
-	cc_args << '-c'
 	cc_args << '-target x86_64-linux-gnu'
 	cc_args << defines
-	cc_args << '-I ${sysroot}/include '
+	cc_args << '-I ${os.quoted_path('${sysroot}/include')} '
 	cc_args << others
-	cc_args << '-o "${obj_file}"'
-	cc_args << '-c "${b.out_name_c}"'
+	cc_args << '-o ${os.quoted_path(obj_file)}'
+	cc_args << '-c ${os.quoted_path(b.out_name_c)}'
 	cc_args << libs
 	b.dump_c_options(cc_args)
 	mut cc_name := 'cc'
@@ -876,11 +943,29 @@ fn (mut b Builder) cc_linux_cross() {
 		verror(cc_res.output)
 		return
 	}
-	mut linker_args := ['-L${sysroot}/usr/lib/x86_64-linux-gnu/',
-		'-L${sysroot}/lib/x86_64-linux-gnu', '--sysroot=${sysroot}', '-v', '-o ${out_name}',
-		'-m elf_x86_64', '-dynamic-linker /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',
-		'${sysroot}/crt1.o ${sysroot}/crti.o ${obj_file}', '-lc', '-lcrypto', '-lssl', '-lpthread',
-		'${sysroot}/crtn.o', '-lm', '-ldl']
+	mut linker_args := [
+		'-L',
+		os.quoted_path('${sysroot}/usr/lib/x86_64-linux-gnu/'),
+		'-L',
+		os.quoted_path('${sysroot}/lib/x86_64-linux-gnu'),
+		'--sysroot=' + os.quoted_path(sysroot),
+		'-v',
+		'-o',
+		os.quoted_path(out_name),
+		'-m elf_x86_64',
+		'-dynamic-linker',
+		os.quoted_path('/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2'),
+		os.quoted_path('${sysroot}/crt1.o'),
+		os.quoted_path('${sysroot}/crti.o'),
+		os.quoted_path(obj_file),
+		'-lc',
+		'-lcrypto',
+		'-lssl',
+		'-lpthread',
+		os.quoted_path('${sysroot}/crtn.o'),
+		'-lm',
+		'-ldl',
+	]
 	linker_args << cflags.c_options_only_object_files()
 	// -ldl
 	b.dump_c_options(linker_args)
@@ -889,8 +974,6 @@ fn (mut b Builder) cc_linux_cross() {
 		ldlld = 'ld.lld.exe'
 	}
 	linker_cmd := '${b.quote_compiler_name(ldlld)} ' + linker_args.join(' ')
-	// s = s.replace('SYSROOT', sysroot) // TODO: $ inter bug
-	// s = s.replace('-o hi', '-o ' + c.pref.out_name)
 	if b.pref.show_cc {
 		println(linker_cmd)
 	}
@@ -919,14 +1002,17 @@ fn (mut b Builder) cc_freebsd_cross() {
 	mut cc_args := []string{cap: 20}
 	cc_args << '-w'
 	cc_args << '-fPIC'
-	cc_args << '-c'
 	cc_args << '-target x86_64-unknown-freebsd14.0' // TODO custom freebsd versions
 	cc_args << defines
-	cc_args << '-I ${sysroot}/include '
-	cc_args << '-I ${sysroot}/usr/include '
+	cc_args << '-I'
+	cc_args << os.quoted_path('${sysroot}/include')
+	cc_args << '-I'
+	cc_args << os.quoted_path('${sysroot}/usr/include')
 	cc_args << others
-	cc_args << '-o "${obj_file}"'
-	cc_args << '-c "${b.out_name_c}"'
+	cc_args << '-o'
+	cc_args << os.quoted_path(obj_file)
+	cc_args << '-c'
+	cc_args << os.quoted_path(b.out_name_c)
 	cc_args << libs
 	b.dump_c_options(cc_args)
 	mut cc_name := b.pref.vcross_compiler_name()
@@ -945,10 +1031,22 @@ fn (mut b Builder) cc_freebsd_cross() {
 		verror(cc_res.output)
 		return
 	}
-	mut linker_args := ['-L${sysroot}/lib/', '-L${sysroot}/usr/lib/', '--sysroot=${sysroot}', '-v',
-		'-o ${out_name}', '-m elf_x86_64', '-dynamic-linker /libexec/ld-elf.so.1',
-		'${sysroot}/usr/lib/crt1.o ${sysroot}/usr/lib/crti.o ${obj_file}',
-		'${sysroot}/usr/lib/crtn.o']
+	mut linker_args := [
+		'-L',
+		os.quoted_path('${sysroot}/lib/'),
+		'-L',
+		os.quoted_path('${sysroot}/usr/lib/'),
+		'--sysroot=' + os.quoted_path(sysroot),
+		'-v',
+		'-o',
+		os.quoted_path(out_name),
+		'-m elf_x86_64',
+		'-dynamic-linker /libexec/ld-elf.so.1',
+		os.quoted_path('${sysroot}/usr/lib/crt1.o'),
+		os.quoted_path('${sysroot}/usr/lib/crti.o'),
+		os.quoted_path(obj_file),
+		os.quoted_path('${sysroot}/usr/lib/crtn.o'),
+	]
 	linker_args << '-lc' // needed for fwrite, strlen etc
 	linker_args << '-lexecinfo' // needed for backtrace
 	linker_args << cflags.c_options_only_object_files() // support custom module defined linker flags
@@ -958,8 +1056,6 @@ fn (mut b Builder) cc_freebsd_cross() {
 	// mut ldlld := '${sysroot}/ld.lld'
 	mut ldlld := b.pref.vcross_linker_name()
 	linker_cmd := '${b.quote_compiler_name(ldlld)} ' + linker_args.join(' ')
-	// s = s.replace('SYSROOT', sysroot) // TODO: $ inter bug
-	// s = s.replace('-o hi', '-o ' + c.pref.out_name)
 	if b.pref.show_cc {
 		println(linker_cmd)
 	}
@@ -1000,7 +1096,14 @@ fn (mut c Builder) cc_windows_cross() {
 	mut debug_options := []string{}
 	if c.pref.is_prod {
 		if c.pref.ccompiler != 'msvc' {
-			optimization_options = ['-O3', '-flto']
+			optimization_options = ['-O3']
+			mut have_flto := true
+			if c.pref.parallel_cc {
+				have_flto = false
+			}
+			if have_flto {
+				optimization_options << '-flto'
+			}
 		}
 	}
 	if c.pref.is_debug {
@@ -1010,23 +1113,33 @@ fn (mut c Builder) cc_windows_cross() {
 	}
 	mut libs := []string{}
 	if false && c.pref.build_mode == .default_mode {
-		builtin_o := '"${pref.default_module_path}/vlib/builtin.o"'
-		libs << builtin_o
+		builtin_o := '${pref.default_module_path}/vlib/builtin.o'
+		libs << os.quoted_path(builtin_o)
 		if !os.exists(builtin_o) {
 			verror('${builtin_o} not found')
 		}
 		for imp in c.table.imports {
-			libs << '"${pref.default_module_path}/vlib/${imp}.o"'
+			libs << os.quoted_path('${pref.default_module_path}/vlib/${imp}.o')
 		}
 	}
 	// add the thirdparty .o files, produced by all the #flag directives:
 	args << cflags.c_options_only_object_files()
 	args << os.quoted_path(c.out_name_c)
+
+	mut c_options_after_target := []string{}
 	if c.pref.ccompiler == 'msvc' {
-		args << cflags.c_options_after_target_msvc()
+		c_options_after_target << cflags.c_options_after_target_msvc()
 	} else {
-		args << cflags.c_options_after_target()
+		c_options_after_target << cflags.c_options_after_target()
 	}
+	for lf in c.ccoptions.linker_flags {
+		if lf in c_options_after_target {
+			continue
+		}
+		c_options_after_target << lf
+	}
+	args << c_options_after_target
+
 	if current_os !in ['macos', 'linux', 'termux'] {
 		println(current_os)
 		panic('your platform is not supported yet')
@@ -1034,13 +1147,14 @@ fn (mut c Builder) cc_windows_cross() {
 
 	mut all_args := []string{}
 	all_args << '-std=gnu11'
-	all_args << optimization_options
+	if !c.pref.no_prod_options {
+		all_args << optimization_options
+	}
 	all_args << debug_options
 
 	all_args << args
 	all_args << c.get_subsystem_flag()
-	all_args << c.ccoptions.linker_flags
-	all_args << '${c.pref.ldflags}'
+	all_args << c.pref.ldflags
 	c.dump_c_options(all_args)
 	mut cmd := cross_compiler_name_path + ' ' + all_args.join(' ')
 	// cmd := 'clang -o $obj_name -w $include -m32 -c -target x86_64-win32 ${pref.default_module_path}/$c.out_name_c'
@@ -1086,10 +1200,10 @@ fn (mut v Builder) build_thirdparty_obj_file(mod string, path string, moduleflag
 		cpp_file = true
 	}
 	opath := v.pref.cache_manager.mod_postfix_with_key2cpath(mod, '.o', obj_path)
-	mut rebuild_reason_message := '${obj_path} not found, building it in ${opath} ...'
+	mut rebuild_reason_message := '${os.quoted_path(obj_path)} not found, building it in ${os.quoted_path(opath)} ...'
 	if os.exists(opath) {
 		if os.exists(cfile) && os.file_last_mod_unix(opath) < os.file_last_mod_unix(cfile) {
-			rebuild_reason_message = '${opath} is older than ${cfile}, rebuilding ...'
+			rebuild_reason_message = '${os.quoted_path(opath)} is older than ${os.quoted_path(cfile)}, rebuilding ...'
 		} else {
 			return
 		}
@@ -1112,8 +1226,8 @@ fn (mut v Builder) build_thirdparty_obj_file(mod string, path string, moduleflag
 	mut all_options := []string{}
 	all_options << v.pref.third_party_option
 	all_options << moduleflags.c_options_before_target()
-	all_options << '-o ${os.quoted_path(opath)}'
-	all_options << '-c ${os.quoted_path(cfile)}'
+	all_options << '-o ${v.tcc_quoted_path(opath)}'
+	all_options << '-c ${v.tcc_quoted_path(cfile)}'
 	cc_options := v.thirdparty_object_args(v.ccoptions, all_options, cpp_file).join(' ')
 
 	// If the third party object file requires a CPP file compilation, switch to a CPP compiler

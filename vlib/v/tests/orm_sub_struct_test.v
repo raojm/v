@@ -1,3 +1,4 @@
+// vtest build: present_sqlite3?
 import db.sqlite
 
 struct Upper {
@@ -11,7 +12,7 @@ struct SubStruct {
 }
 
 fn test_orm_sub_structs() {
-	db := sqlite.connect(':memory:') or { panic(err) }
+	mut db := sqlite.connect(':memory:') or { panic(err) }
 	sql db {
 		create table Upper
 	}!
@@ -34,4 +35,5 @@ fn test_orm_sub_structs() {
 	}!
 
 	assert uppers.first().sub.name == upper_1.sub.name
+	db.close()!
 }

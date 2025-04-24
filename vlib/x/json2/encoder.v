@@ -17,7 +17,7 @@ pub:
 }
 
 // byte array versions of the most common tokens/chars to avoid reallocations
-const null_in_bytes = 'null'
+const null_in_string = 'null'
 
 const true_in_string = 'true'
 
@@ -100,7 +100,7 @@ fn encode_array[T](val []T) string {
 // encode_pretty ...
 pub fn encode_pretty[T](typed_data T) string {
 	encoded := encode(typed_data)
-	raw_decoded := raw_decode(encoded) or { 0 }
+	raw_decoded := decode[Any](encoded) or { 0 }
 	return raw_decoded.prettify_json_str()
 }
 
@@ -180,7 +180,7 @@ fn (e &Encoder) encode_value_with_level[T](val T, level int, mut buf []u8) ! {
 		str_value := val.json_str()
 		unsafe { buf.push_many(str_value.str, str_value.len) }
 	} $else $if T is Null {
-		unsafe { buf.push_many(null_in_bytes.str, null_in_bytes.len) }
+		unsafe { buf.push_many(null_in_string.str, null_in_string.len) }
 	} $else $if T is $struct {
 		e.encode_struct(val, level, mut buf)!
 	} $else $if T is $enum {
@@ -229,9 +229,14 @@ fn (e &Encoder) encode_struct[U](val U, level int, mut buf []u8) ! {
 		mut ignore_field := false
 
 		value := val.$(field.name)
-
-		is_nil := val.$(field.name).str() == '&nil'
-
+		mut is_nil := false
+		$if value is $option {
+			if field.indirections > 0 {
+				is_nil = value == none
+			}
+		} $else $if field.indirections > 0 {
+			is_nil = value == unsafe { nil }
+		}
 		mut json_name := ''
 
 		for attr in field.attrs {
@@ -586,7 +591,7 @@ fn (e &Encoder) encode_string(s string, mut buf []u8) ! {
 	buf << quote_rune
 }
 
-fn hex_digit(n int) u8 {
+fn hex_digit(n u32) u8 {
 	if n < 10 {
 		return `0` + n
 	}

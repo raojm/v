@@ -18,12 +18,12 @@ on:
       - '!cmd/tools/builders/**.v'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
+  group: other-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   prevent-gpl-licenses:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout V ${{ github.head_ref }}
@@ -39,37 +39,37 @@ jobs:
         run: |
           gpl_search_cmd="grep 'GPL' -r --exclude-dir=.git --exclude=*.yml --exclude=*.md --exclude=*.vv --exclude=*_test.v ."
           cd vmaster
-          eval $gpl_search_cmd > ../gpl_res_vmaster
+          eval "$gpl_search_cmd" > ../gpl_res_vmaster
           cd ../v
-          eval $gpl_search_cmd > ../gpl_res_vnew
+          eval "$gpl_search_cmd" > ../gpl_res_vnew
           cd ..
           diff -d -a -U 2 --color=always gpl_res_vmaster gpl_res_vnew
 
   code-formatting:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       VFLAGS: -cc gcc
     steps:
       - uses: actions/checkout@v4
       - name: Environment info
-        run: echo $VFLAGS $GITHUB_SHA $GITHUB_REF
+        run: echo "$VFLAGS $GITHUB_SHA $GITHUB_REF"
       - name: Build local v
         run: make -j4 && ./v symlink
       - name: v test-cleancode
-        run: ./v test-cleancode
+        run: ./v -silent test-cleancode
       - name: v test-fmt
-        run: ./v test-fmt
+        run: ./v -silent test-fmt
 
   performance-regressions:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       VFLAGS: -cc gcc
     steps:
       - uses: actions/checkout@v4
       - name: Environment info
-        run: echo $VFLAGS $GITHUB_SHA $GITHUB_REF
+        run: echo "$VFLAGS $GITHUB_SHA $GITHUB_REF"
       - name: Build local v
         run: make -j4 && ./v symlink
       - name: Clone & Build previous vmaster/v
@@ -86,7 +86,7 @@ jobs:
         run: ./v repeat --max_time 1731 --series 3 --runs 20 --nmins 2 --nmaxs 5 --warmup 3 --fail_percent 10 -t 'cd {T} ; ./v -o v.c cmd/v' . ./vmaster
 
   misc-tooling:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 121
     env:
       VFLAGS: -cc tcc -no-retry-compilation
@@ -101,7 +101,7 @@ jobs:
         run: |
           ./v retry -- sudo apt update
           ./v retry -- sudo apt install --quiet -y libsodium-dev libssl-dev sqlite3 libsqlite3-dev postgresql libpq-dev valgrind
-          ./v retry -- sudo apt install --quiet -y libfreetype6-dev libxi-dev libxcursor-dev libgl-dev libasound2-dev xfonts-75dpi xfonts-base
+          ./v retry -- sudo apt install --quiet -y libfreetype6-dev libxi-dev libxcursor-dev libgl-dev libxrandr-dev libasound2-dev xfonts-75dpi xfonts-base
           ./v retry -- sudo apt install --quiet -y g++-9 g++-10
 
       - name: g++-9 version
@@ -124,7 +124,7 @@ jobs:
           ./v should-compile-all examples/sokol/*.v examples/sokol/0?*/*.v
 
   parser-silent:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 121
     steps:
       - uses: actions/checkout@v4

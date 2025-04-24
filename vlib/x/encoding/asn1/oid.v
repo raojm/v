@@ -12,10 +12,14 @@ pub const default_oid_tag = Tag{.universal, false, int(TagType.oid)}
 // ASN.1 ObjectIdentifier type.
 //
 // The ASN. 1 OBJECT IDENTIFIER type is used when you need to provide a unique identifier.
-@[noinit]
 pub struct ObjectIdentifier {
 mut:
 	value []int
+}
+
+// value returns underlying ObjectIdentifier values as arrays of int.
+pub fn (o ObjectIdentifier) value() []int {
+	return o.value
 }
 
 // tag returns the tag of ObjectIdentifier type.
@@ -180,7 +184,7 @@ fn (oid ObjectIdentifier) str() string {
 	}
 	res := s.join('.')
 
-	return 'OID (${res})'
+	return '${res}'
 }
 
 fn (oid ObjectIdentifier) validate() bool {

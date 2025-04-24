@@ -1,5 +1,6 @@
 // A Signed Distance Field rendering demo, ported from https://github.com/floooh/sokol-samples/blob/master/sapp/sdf-sapp.c
 // which in turn is based on https://iquilezles.org/articles/mandelbulb/ and https://www.shadertoy.com/view/ltfSWn
+// vtest build: misc-tooling // needs .h files that are produced by `v shader`
 import sokol.sapp
 import sokol.gfx
 
@@ -33,7 +34,7 @@ fn init(mut state State) {
 
 	mut pipeline := gfx.PipelineDesc{}
 	pipeline.layout.attrs[C.ATTR_vs_position].format = .float2
-	pipeline.shader = gfx.make_shader(C.sdf_shader_desc(gfx.query_backend()))
+	pipeline.shader = gfx.make_shader(voidptr(C.sdf_shader_desc(gfx.query_backend())))
 	state.pip = gfx.make_pipeline(&pipeline)
 
 	// No need to clear the window, since the shader will overwrite the whole framebuffer

@@ -51,6 +51,12 @@ pub fn (node &FnDecl) fkey() string {
 	return node.name
 }
 
+// sfkey returns a unique name of the struct field.
+// it is used in v.markused.
+pub fn (node &StructField) sfkey() string {
+	return '${int(node.container_typ)}.${node.name}}'
+}
+
 pub fn (node &Fn) fkey() string {
 	if node.is_method {
 		return '${int(node.receiver_type)}.${node.name}'
@@ -186,7 +192,12 @@ fn (t &Table) stringify_fn_after_name(node &FnDecl, mut f strings.Builder, cur_m
 		f.write_string(param.name)
 		param_sym := t.sym(param.typ)
 		if param_sym.info is Struct && param_sym.info.is_anon {
-			f.write_string(' struct {')
+			if param.typ.has_flag(.option) {
+				f.write_string(' ?')
+			} else {
+				f.write_string(' ')
+			}
+			f.write_string('struct {')
 			for field in param_sym.info.fields {
 				f.write_string(' ${field.name} ${t.type_to_str(field.typ)}')
 				if field.has_default_expr {

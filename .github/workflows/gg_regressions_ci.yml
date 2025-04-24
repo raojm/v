@@ -17,12 +17,12 @@ on:
       - '!**.md'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
+  group: gg-regressions-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   gg-regressions:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       VFLAGS: -cc tcc
@@ -45,8 +45,8 @@ jobs:
           # libgl1-mesa-dri          : For headless rendering / software DRI driver (LIBGL_ALWAYS_SOFTWARE=true)
           # freeglut3-dev            : Fixes graphic apps compilation with tcc
           ./v retry -- sudo apt update
-          ./v retry -- sudo apt install imagemagick openimageio-tools libgl1-mesa-dri xvfb libxcursor-dev libxi-dev freeglut3-dev xsel xclip
-          ./v retry -- wget https://raw.githubusercontent.com/tremby/imgur.sh/c98345d/imgur.sh
+          ./v retry -- sudo apt install imagemagick openimageio-tools libgl1-mesa-dri xvfb libxcursor-dev libxi-dev libxrandr-dev freeglut3-dev xsel xclip
+          ./v retry -- ./v download https://raw.githubusercontent.com/tremby/imgur.sh/c98345d/imgur.sh
           ./v retry -- git clone https://github.com/Larpon/gg-regression-images gg-regression-images
           chmod +x ./imgur.sh
 
@@ -54,7 +54,7 @@ jobs:
         id: compare
         continue-on-error: true
         run: |
-          Xvfb $DISPLAY -screen 0 1280x1024x24 -fbdir /var/tmp/ &
+          Xvfb "$DISPLAY" -screen 0 1280x1024x24 -fbdir /var/tmp/ &
           sleep 2; while [ ! -f /var/tmp/Xvfb_screen0 ]; do sleep 0.5; done # give xvfb time to start, even on slow CI runs
           sleep 5; ./v gret -t ./gg-regression-images/vgret.v_examples.toml -v ./gg-sample_images ./gg-regression-images
 

@@ -8,6 +8,9 @@ import v.util
 
 fn (mut g Gen) need_tmp_var_in_match(node ast.MatchExpr) bool {
 	if node.is_expr && node.return_type != ast.void_type && node.return_type != 0 {
+		if g.inside_struct_init {
+			return true
+		}
 		if g.table.sym(node.return_type).kind in [.sum_type, .multi_return]
 			|| node.return_type.has_option_or_result() {
 			return true
@@ -25,6 +28,9 @@ fn (mut g Gen) need_tmp_var_in_match(node ast.MatchExpr) bool {
 			if branch.stmts.len == 1 {
 				if branch.stmts[0] is ast.ExprStmt {
 					stmt := branch.stmts[0] as ast.ExprStmt
+					if stmt.expr is ast.ArrayInit && stmt.expr.is_fixed {
+						return true
+					}
 					if g.need_tmp_var_in_expr(stmt.expr) {
 						return true
 					}
@@ -160,7 +166,7 @@ fn (mut g Gen) match_expr(node ast.MatchExpr) {
 	}
 	g.write(cur_line)
 	if need_tmp_var {
-		g.write('${tmp_var}')
+		g.write(tmp_var)
 	}
 	if is_expr && !need_tmp_var {
 		g.write(')')
@@ -205,9 +211,19 @@ fn (mut g Gen) match_expr_sumtype(node ast.MatchExpr, is_expr bool, cond_var str
 					g.write_v_source_line_info(branch)
 					g.write('if (')
 				}
+				need_deref := node.cond_type.nr_muls() > 1
+				if need_deref {
+					g.write2('(', '*'.repeat(node.cond_type.nr_muls() - 1))
+				}
 				g.write(cond_var)
+				if need_deref {
+					g.write(')')
+				}
 				cur_expr := unsafe { &branch.exprs[sumtype_index] }
 				if cond_sym.kind == .sum_type {
+					if cur_expr is ast.TypeNode {
+						g.type_resolver.update_ct_type(cond_var, cur_expr.typ)
+					}
 					g.write('${dot_or_ptr}_typ == ')
 					if cur_expr is ast.None {
 						g.write('${ast.none_type.idx()} /* none */')
@@ -482,6 +498,9 @@ fn (mut g Gen) match_expr_classic(node ast.MatchExpr, is_expr bool, cond_var str
 					.array_fixed {
 						ptr_typ := g.equality_fn(node.cond_type)
 						g.write('${ptr_typ}_arr_eq(${cond_var}, ')
+						if expr is ast.ArrayInit {
+							g.write('(${g.styp(node.cond_type)})')
+						}
 						g.expr(expr)
 						g.write(')')
 					}

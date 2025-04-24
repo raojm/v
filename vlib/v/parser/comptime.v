@@ -78,6 +78,7 @@ fn (mut p Parser) hash() ast.HashStmt {
 	pos := p.tok.pos()
 	val := p.tok.lit
 	kind := val.all_before(' ')
+	attrs := p.attrs
 	p.next()
 	mut main_str := ''
 	mut msg := ''
@@ -89,6 +90,15 @@ fn (mut p Parser) hash() ast.HashStmt {
 		main_str = content.trim_space()
 		msg = ''
 	}
+
+	mut is_use_once := false
+	for fna in attrs {
+		match fna.name {
+			'use_once' { is_use_once = true }
+			else {}
+		}
+	}
+
 	return ast.HashStmt{
 		mod:         p.mod
 		source_file: p.file_path
@@ -97,8 +107,12 @@ fn (mut p Parser) hash() ast.HashStmt {
 		main:        main_str
 		msg:         msg
 		pos:         pos
+		attrs:       attrs
+		is_use_once: is_use_once
 	}
 }
+
+const error_msg = 'only `\$tmpl()`, `\$env()`, `\$embed_file()`, `\$pkgconfig()`, `\$vweb.html()`, `\$compile_error()`, `\$compile_warn()`, `\$d()` and `\$res()` comptime functions are supported right now'
 
 fn (mut p Parser) comptime_call() ast.ComptimeCall {
 	err_node := ast.ComptimeCall{
@@ -107,7 +121,6 @@ fn (mut p Parser) comptime_call() ast.ComptimeCall {
 	start_pos := p.tok.pos()
 	p.check(.dollar)
 	mut is_veb := false
-	error_msg := 'only `\$tmpl()`, `\$env()`, `\$embed_file()`, `\$pkgconfig()`, `\$vweb.html()`, `\$compile_error()`, `\$compile_warn()`, `\$d()` and `\$res()` comptime functions are supported right now'
 	if p.peek_tok.kind == .dot {
 		name := p.check_name() // skip `vweb.html()` TODO
 		if name != 'vweb' && name != 'veb' {
@@ -318,6 +331,10 @@ fn (mut p Parser) comptime_call() ast.ComptimeCall {
 	// the tmpl inherits all parent scopes. previous functionality was just to
 	// inherit the scope from which the comptime call was made and no parents.
 	// this is much simpler and allows access to globals. can be changed if needed.
+	p.open_scope()
+	defer {
+		p.close_scope()
+	}
 	mut file := parse_comptime(tmpl_path, v_code, mut p.table, p.pref, mut p.scope)
 	file.path = tmpl_path
 	return ast.ComptimeCall{
@@ -348,11 +365,16 @@ fn (mut p Parser) comptime_for() ast.ComptimeFor {
 	mut typ_pos := p.tok.pos()
 	lang := p.parse_language()
 	mut typ := ast.void_type
+
+	if p.tok.lit.len == 0 {
+		p.error('invalid expr, use `${p.peek_tok.lit}` instead')
+		return ast.ComptimeFor{}
+	}
 	if p.tok.lit[0].is_capital() || p.tok.lit in p.imports {
 		typ = p.parse_any_type(lang, false, true, false)
 	} else {
 		expr = p.ident(lang)
-		p.mark_var_as_used((expr as ast.Ident).name)
+		p.scope.mark_var_as_used((expr as ast.Ident).name)
 	}
 	typ_pos = typ_pos.extend(p.prev_tok.pos())
 	p.check(.dot)
@@ -470,7 +492,7 @@ fn (mut p Parser) comptime_selector(left ast.Expr) ast.Expr {
 	if p.peek_tok.kind == .lpar {
 		method_pos := p.tok.pos()
 		method_name := p.check_name()
-		p.mark_var_as_used(method_name)
+		p.scope.mark_var_as_used(method_name)
 		// `app.$action()` (`action` is a string)
 		p.check(.lpar)
 		args := p.call_args()
@@ -514,5 +536,10 @@ fn (mut p Parser) comptime_selector(left ast.Expr) ast.Expr {
 		left:       left
 		field_expr: expr
 		pos:        start_pos.extend(p.prev_tok.pos())
+		or_block:   ast.OrExpr{
+			stmts: []ast.Stmt{}
+			kind:  if p.tok.kind == .question { .propagate_option } else { .absent }
+			pos:   p.tok.pos()
+		}
 	}
 }

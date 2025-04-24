@@ -4,7 +4,7 @@
 module asn1
 
 fn test_explicit_context_null_pack_unpack() ! {
-	el := Null.new()
+	el := Null{}
 	ex1 := ContextElement.from_element(el, 0, .explicit)!
 
 	out := encode(ex1)!
@@ -21,7 +21,7 @@ fn test_explicit_context_null_pack_unpack() ! {
 }
 
 fn test_explicit_context_nested_pack_unpack() ! {
-	el := Null.new()
+	el := Null{}
 
 	ex1 := ContextElement.from_element(el, 1, .explicit)!
 
@@ -59,8 +59,8 @@ Example ::= SEQUENCE {
 	assert els[1] is Integer
 	mut els2 := els[2] as ContextElement
 
-	els2.set_mode(.explicit)!
-	els2.set_inner_tag(default_oid_tag)!
+	els2.set_mode(.explicit, true)!
+	els2.set_inner_tag(default_oid_tag, true)!
 
 	out.clear()
 	out = encode(els2)!

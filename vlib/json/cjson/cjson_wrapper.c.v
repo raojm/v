@@ -12,6 +12,27 @@ module cjson
 #flag @VEXEROOT/thirdparty/cJSON/cJSON.o
 #include "cJSON.h"
 
+// As cJSON use `libm`, we need to link it.
+$if windows {
+	$if tinyc {
+		#flag @VEXEROOT/thirdparty/tcc/lib/openlibm.o
+	}
+} $else {
+	#flag -lm
+}
+
+@[flag]
+pub enum CJsonType {
+	t_false
+	t_true
+	t_null
+	t_number
+	t_string
+	t_array
+	t_object
+	t_raw
+}
+
 @[typedef]
 pub struct C.cJSON {
 pub:
@@ -19,7 +40,7 @@ pub:
 	prev  &C.cJSON
 	child &C.cJSON // An array or object item will have a child pointer pointing to a chain of the items in the array/object
 
-	type int // The type of the item, as above
+	type CJsonType // The type of the item, as above
 
 	valueint    int   // writing to valueint is DEPRECATED, use cJSON_SetNumberValue instead
 	valuedouble f64   // The item's number, if type==cJSON_Number
@@ -81,6 +102,8 @@ fn C.cJSON_Delete(object &C.cJSON)
 fn C.cJSON_Print(object &C.cJSON) &char
 
 fn C.cJSON_PrintUnformatted(object &C.cJSON) &char
+
+fn C.cJSON_free(voidptr)
 
 //
 
@@ -168,7 +191,9 @@ pub fn (mut obj Node) print() string {
 // print serialises the node to a string, without formatting its structure, so the resulting string is shorter/cheaper to transmit.
 pub fn (mut obj Node) print_unformatted() string {
 	mut s := C.cJSON_PrintUnformatted(obj)
-	return unsafe { tos3(s) }
+	ret := unsafe { tos_clone(&u8(s)) }
+	C.cJSON_free(s)
+	return ret
 }
 
 // str returns the unformatted serialisation to string of the given Node.

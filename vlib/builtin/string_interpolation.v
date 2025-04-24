@@ -200,7 +200,7 @@ fn (data &StrIntpData) process_str_intp_data(mut sb strings.Builder) {
 	}
 
 	// align
-	if fmt_pad_ch == 0 {
+	if fmt_pad_ch == 0 || pad_ch == `0` {
 		match align {
 			0 { bf.align = .left }
 			1 { bf.align = .right }
@@ -694,7 +694,7 @@ pub:
 // interpolation function
 @[direct_array_access; manualfree]
 pub fn str_intp(data_len int, input_base &StrIntpData) string {
-	mut res := strings.new_builder(256)
+	mut res := strings.new_builder(64)
 	for i := 0; i < data_len; i++ {
 		data := unsafe { &input_base[i] }
 		// avoid empty strings

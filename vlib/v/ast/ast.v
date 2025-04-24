@@ -205,6 +205,7 @@ pub:
 pub const empty_expr = Expr(EmptyExpr(0))
 pub const empty_stmt = Stmt(EmptyStmt{})
 pub const empty_node = Node(EmptyNode{})
+pub const empty_comptime_const_value = ComptTimeConstValue(EmptyExpr(0))
 
 // `{stmts}` or `unsafe {stmts}`
 pub struct Block {
@@ -310,6 +311,7 @@ pub mut:
 	from_embed_types         []Type   // holds the type of the embed that the method is called from
 	generic_from_embed_types [][]Type // holds the types of the embeds for each generic instance when the same generic method is called.
 	has_hidden_receiver      bool
+	is_field_typ             bool // var.typ for comptime $for var
 }
 
 // root_ident returns the origin ident where the selector started.
@@ -349,7 +351,6 @@ pub:
 	option_pos       token.Pos
 	pre_comments     []Comment
 	comments         []Comment
-	next_comments    []Comment
 	i                int
 	has_default_expr bool
 	has_prev_newline bool
@@ -363,6 +364,7 @@ pub:
 	is_deprecated    bool
 	is_embed         bool
 pub mut:
+	next_comments    []Comment
 	is_recursive     bool
 	is_part_of_union bool
 	container_typ    Type
@@ -398,7 +400,7 @@ pub mut:
 	end_comments []Comment // comments that after const field
 	// the comptime_expr_value field is filled by the checker, when it has enough
 	// info to evaluate the constant at compile time
-	comptime_expr_value ComptTimeConstValue = empty_comptime_const_expr()
+	comptime_expr_value ComptTimeConstValue = empty_comptime_const_value
 }
 
 // const declaration
@@ -423,22 +425,22 @@ pub:
 	generic_types []Type
 	is_pub        bool
 	// _pos fields for vfmt
-	mut_pos      int = -1 // mut:
-	pub_pos      int = -1 // pub:
-	pub_mut_pos  int = -1 // pub mut:
-	global_pos   int = -1 // __global:
-	module_pos   int = -1 // module:
-	language     Language
-	is_union     bool
-	attrs        []Attr
-	pre_comments []Comment
-	end_comments []Comment
-	embeds       []Embed
-
+	mut_pos          int = -1 // mut:
+	pub_pos          int = -1 // pub:
+	pub_mut_pos      int = -1 // pub mut:
+	global_pos       int = -1 // __global:
+	module_pos       int = -1 // module:
+	is_union         bool
+	is_option        bool
+	attrs            []Attr
+	pre_comments     []Comment
+	end_comments     []Comment
+	embeds           []Embed
 	is_implements    bool
 	implements_types []TypeNode
 pub mut:
-	fields []StructField
+	language Language
+	fields   []StructField
 }
 
 pub struct Embed {
@@ -521,6 +523,7 @@ pub mut:
 	has_update_expr      bool // has `...a`
 	init_fields          []StructInitField
 	generic_types        []Type
+	language             Language
 }
 
 pub enum StructInitKind {
@@ -583,6 +586,7 @@ pub:
 	is_exported           bool        // true for `@[export: 'exact_C_name']`
 	is_keep_alive         bool        // passed memory must not be freed (by GC) before function returns
 	is_unsafe             bool        // true, when @[unsafe] is used on a fn
+	is_must_use           bool        // true, when @[must_use] is used on a fn. Calls to such functions, that ignore the return value, will cause warnings.
 	is_markused           bool        // true, when an explicit `@[markused]` tag was put on a fn; `-skip-unused` will not remove that fn
 	is_file_translated    bool        // true, when the file it resides in is `@[translated]`
 	receiver              StructField // TODO: this is not a struct field
@@ -628,6 +632,7 @@ pub mut:
 	scope       &Scope = unsafe { nil }
 	label_names []string
 	pos         token.Pos // function declaration position
+	end_pos     token.Pos // end position
 	//
 	is_expand_simple_interpolation bool // true, when @[expand_simple_interpolation] is used on a fn. It should have a single string argument.
 }
@@ -674,6 +679,7 @@ pub:
 	is_deprecated         bool // `@[deprecated] fn abc(){}`
 	is_noreturn           bool // `@[noreturn] fn abc(){}`
 	is_unsafe             bool // `@[unsafe] fn abc(){}`
+	is_must_use           bool // `@[must_use] fn abc(){}`
 	is_placeholder        bool
 	is_main               bool // `fn main(){}`
 	is_test               bool // `fn test_abc(){}`
@@ -832,6 +838,7 @@ pub mut:
 	is_return_used         bool // return value is used for another expr
 	//
 	is_expand_simple_interpolation bool // true, when the function/method is marked as @[expand_simple_interpolation]
+	is_unwrapped_fn_selector       bool // true, when the call is from an unwrapped selector (e.g. if t.foo != none { t.foo() })
 	// Calls to it with an interpolation argument like `b.f('x ${y}')`, will be converted to `b.f('x ')` followed by `b.f(y)`.
 	// The same type, has to support also a .write_decimal(n i64) method.
 }
@@ -857,6 +864,7 @@ pub mut:
 	pos             token.Pos
 	should_be_ptr   bool // fn expects a ptr for this arg
 	// tmp_name        string // for autofree
+	ct_expr bool // true, when the expression is a comptime/generic expression
 }
 
 // function return statement
@@ -877,6 +885,7 @@ pub enum ComptimeVarKind {
 	generic_param // generic fn parameter
 	generic_var   // generic var
 	smartcast     // smart cast when used in `is v` (when `v` is from $for .variants)
+	aggregate     // aggregate var
 }
 
 @[minify]
@@ -892,6 +901,7 @@ pub mut:
 	is_arg        bool // fn args should not be autofreed
 	is_auto_deref bool
 	is_unwrapped  bool // ct type smartcast unwrapped
+	is_index_var  bool // index loop var
 	expr          Expr
 	typ           Type
 	orig_type     Type   // original sumtype type; 0 if it's not a sumtype
@@ -900,10 +910,11 @@ pub mut:
 	// 10 <- original type (orig_type)
 	//   [11, 12, 13] <- cast order (smartcasts)
 	//        12 <- the current casted type (typ)
-	pos         token.Pos
-	is_used     bool            // whether the local variable was used in other expressions
-	is_changed  bool            // to detect mutable vars that are never changed
-	ct_type_var ComptimeVarKind // comptime variable type
+	pos               token.Pos
+	is_used           bool            // whether the local variable was used in other expressions
+	is_changed        bool            // to detect mutable vars that are never changed
+	ct_type_var       ComptimeVarKind // comptime variable type
+	ct_type_unwrapped bool            // true when the comptime variable gets unwrapped
 	// (for setting the position after the or block for autofree)
 	is_or        bool // `x := foo() or { ... }`
 	is_tmp       bool // for tmp for loop vars, so that autofree can skip them
@@ -920,8 +931,8 @@ pub:
 	name        string
 	pos         token.Pos
 	typ         Type
-	smartcasts  []Type // nested sum types require nested smart casting, for that a list of types is needed
 	orig_type   Type   // original sumtype type; 0 if it's not a sumtype
+	smartcasts  []Type // nested sum types require nested smart casting, for that a list of types is needed
 	// TODO: move this to a real docs site later
 	// 10 <- original type (orig_type)
 	//   [11, 12, 13] <- cast order (smartcasts)
@@ -976,6 +987,7 @@ pub struct File {
 pub:
 	nr_lines      int    // number of source code lines in the file (including newlines and comments)
 	nr_bytes      int    // number of processed source code bytes
+	nr_tokens     int    // number of processed tokens in the source code of the file
 	mod           Module // the module of the source file (from `module xyz` at the top)
 	global_scope  &Scope = unsafe { nil }
 	is_test       bool // true for _test.v files
@@ -1071,6 +1083,7 @@ pub mut:
 	is_mut         bool // if mut *token* is before name. Use `is_mut()` to lookup mut variable
 	or_expr        OrExpr
 	concrete_types []Type
+	ct_expr        bool // is it a comptime expr?
 }
 
 // full_name returns the name of the ident, prefixed with the module name
@@ -1086,6 +1099,7 @@ pub fn (mut i Ident) full_name() string {
 	return i.full_name
 }
 
+@[inline]
 pub fn (i &Ident) is_auto_heap() bool {
 	return match i.obj {
 		Var { i.obj.is_auto_heap }
@@ -1093,6 +1107,7 @@ pub fn (i &Ident) is_auto_heap() bool {
 	}
 }
 
+@[inline]
 pub fn (i &Ident) is_mut() bool {
 	match i.obj {
 		Var { return i.obj.is_mut }
@@ -1126,9 +1141,11 @@ pub mut:
 	or_block      OrExpr
 
 	ct_left_value_evaled  bool
-	ct_left_value         ComptTimeConstValue = empty_comptime_const_expr()
+	ct_left_value         ComptTimeConstValue = empty_comptime_const_value
+	left_ct_expr          bool // true when left is comptime/generic expr
 	ct_right_value_evaled bool
-	ct_right_value        ComptTimeConstValue = empty_comptime_const_expr()
+	ct_right_value        ComptTimeConstValue = empty_comptime_const_value
+	right_ct_expr         bool // true when right is comptime/generic expr
 
 	before_op_comments []Comment
 	after_op_comments  []Comment
@@ -1359,6 +1376,7 @@ pub:
 	mod         string
 	pos         token.Pos
 	source_file string
+	is_use_once bool // true for @[use_once]
 pub mut:
 	val      string // example: 'include <openssl/rand.h> # please install openssl // comment'
 	kind     string // : 'include'
@@ -1366,6 +1384,7 @@ pub mut:
 	msg      string // : 'please install openssl'
 	ct_conds []Expr // *all* comptime conditions, that must be true, for the hash to be processed
 	// ct_conds is filled by the checker, based on the current nesting of `$if cond1 {}` blocks
+	attrs []Attr
 }
 
 // variable assign statement
@@ -1443,13 +1462,14 @@ pub:
 
 pub struct AliasTypeDecl {
 pub:
-	name        string
-	is_pub      bool
-	typ         Type
+	name     string
+	is_pub   bool
+	typ      Type
+	pos      token.Pos
+	type_pos token.Pos
+	comments []Comment
+pub mut:
 	parent_type Type
-	pos         token.Pos
-	type_pos    token.Pos
-	comments    []Comment
 }
 
 // SumTypeDecl is the ast node for `type MySumType = string | int`
@@ -1541,22 +1561,24 @@ pub:
 	ecmnts        [][]Comment // optional iembed comments after each expr
 	pre_cmnts     []Comment
 	is_fixed      bool
+	is_option     bool // true if it was declared as ?[2]Type or ?[]Type
 	has_val       bool // fixed size literal `[expr, expr]!`
 	mod           string
 	has_len       bool
 	has_cap       bool
 	has_init      bool
-	has_index     bool // true if temp variable index is used
+	has_index     bool // true if temp variable index is used	
 pub mut:
-	exprs      []Expr // `[expr, expr]` or `[expr]Type{}` for fixed array
-	len_expr   Expr   // len: expr
-	cap_expr   Expr   // cap: expr
-	init_expr  Expr   // init: expr
-	expr_types []Type // [Dog, Cat] // also used for interface_types
-	elem_type  Type   // element type
-	init_type  Type   // init: value type
-	typ        Type   // array type
-	alias_type Type   // alias type
+	exprs        []Expr // `[expr, expr]` or `[expr]Type{}` for fixed array
+	len_expr     Expr   // len: expr
+	cap_expr     Expr   // cap: expr
+	init_expr    Expr   // init: expr
+	expr_types   []Type // [Dog, Cat] // also used for interface_types
+	elem_type    Type   // element type
+	init_type    Type   // init: value type
+	typ          Type   // array type
+	alias_type   Type   // alias type
+	has_callexpr bool   // has expr which needs tmp var to initialize it
 }
 
 pub struct ArrayDecompose {
@@ -1805,6 +1827,13 @@ pub const riscv_with_number_register_list = {
 	'a#': 8
 }
 
+pub const s390x_no_number_register_list = []string{}
+pub const s390x_with_number_register_list = {
+	'f#': 16
+	'r#': 16
+	'v#': 32
+}
+
 pub struct DebuggerStmt {
 pub:
 	pos token.Pos
@@ -1979,11 +2008,14 @@ pub struct ComptimeSelector {
 pub:
 	has_parens bool // if $() is used, for vfmt
 	pos        token.Pos
+	or_block   OrExpr
 pub mut:
 	left       Expr
 	left_type  Type
 	field_expr Expr
 	typ        Type
+	is_name    bool   // true if f.$(field.name)
+	typ_key    string // `f.typ` cached key for type resolver
 }
 
 @[minify]
@@ -2143,6 +2175,17 @@ pub fn (expr Expr) is_blank_ident() bool {
 	return false
 }
 
+@[inline]
+pub fn (expr Expr) is_as_cast() bool {
+	if expr is ParExpr {
+		return expr.expr.is_as_cast()
+	} else if expr is SelectorExpr {
+		return expr.expr.is_as_cast()
+	} else {
+		return expr is AsCast
+	}
+}
+
 __global nested_expr_pos_calls = i64(0)
 // values above 14000 risk stack overflow by default on macos in Expr.pos() calls
 const max_nested_expr_pos_calls = 5000
@@ -2245,9 +2288,19 @@ pub fn (expr Expr) is_pure_literal() bool {
 
 pub fn (expr Expr) is_auto_deref_var() bool {
 	return match expr {
-		Ident { expr.obj is Var && expr.obj.is_auto_deref }
-		PrefixExpr { expr.op == .amp && expr.right.is_auto_deref_var() }
-		else { false }
+		Ident {
+			if expr.obj is Var {
+				expr.obj.is_auto_deref
+			} else {
+				false
+			}
+		}
+		PrefixExpr {
+			expr.op == .amp && expr.right.is_auto_deref_var()
+		}
+		else {
+			false
+		}
 	}
 }
 
@@ -2276,7 +2329,8 @@ pub:
 	typ    Type   // the type of the original expression
 	is_ptr bool   // whether the type is a pointer
 pub mut:
-	orig Expr // the original expression, which produced the C temp variable; used by x.str()
+	orig         Expr // the original expression, which produced the C temp variable; used by x.str()
+	is_fixed_ret bool // it is an array fixed returned from call
 }
 
 pub fn (node Node) pos() token.Pos {
@@ -2585,6 +2639,13 @@ pub fn all_registers(mut t Table, arch pref.Arch) map[string]ScopeObject {
 				res[k] = v
 			}
 		}
+		.s390x {
+			s390x := gen_all_registers(mut t, s390x_no_number_register_list, s390x_with_number_register_list,
+				64)
+			for k, v in s390x {
+				res[k] = v
+			}
+		}
 		.wasm32 {
 			// no registers
 		}
@@ -2665,10 +2726,12 @@ pub fn (expr Expr) is_literal() bool {
 	}
 }
 
+@[inline]
 pub fn (e Expr) is_nil() bool {
 	return e is Nil || (e is UnsafeExpr && e.expr is Nil)
 }
 
+@[direct_array_access]
 pub fn type_can_start_with_token(tok &token.Token) bool {
 	return match tok.kind {
 		.name {

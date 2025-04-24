@@ -94,16 +94,16 @@ pub fn (mut c UdpConn) write_to_string(addr Addr, s string) !int {
 	return c.write_to_ptr(addr, s.str, s.len)
 }
 
-// read reads from the socket into buf up to buf.len returning the number of bytes read
-pub fn (mut c UdpConn) read(mut buf []u8) !(int, Addr) {
+// read_ptr reads from the socket into `buf_ptr` up to `len` bytes, returning the number of bytes read and the `Addr` read from.
+pub fn (c &UdpConn) read_ptr(buf_ptr &u8, len int) !(int, Addr) {
 	mut addr := Addr{
 		addr: AddrData{
 			Ip6: Ip6{}
 		}
 	}
-	len := sizeof(Addr)
-	mut res := wrap_read_result(C.recvfrom(c.sock.handle, voidptr(buf.data), buf.len,
-		0, voidptr(&addr), &len))!
+	addr_len := sizeof(Addr)
+	mut res := wrap_read_result(C.recvfrom(c.sock.handle, voidptr(buf_ptr), len, 0, voidptr(&addr),
+		&addr_len))!
 	if res > 0 {
 		return res, addr
 	}
@@ -111,14 +111,19 @@ pub fn (mut c UdpConn) read(mut buf []u8) !(int, Addr) {
 	if code == int(error_ewouldblock) {
 		c.wait_for_read()!
 		// same setup as in tcp
-		res = wrap_read_result(C.recvfrom(c.sock.handle, voidptr(buf.data), buf.len, 0,
-			voidptr(&addr), &len))!
+		res = wrap_read_result(C.recvfrom(c.sock.handle, voidptr(buf_ptr), len, 0, voidptr(&addr),
+			&addr_len))!
 		res2 := socket_error(res)!
 		return res2, addr
 	} else {
 		wrap_error(code)!
 	}
 	return error('none')
+}
+
+// read reads from the socket into buf up to buf.len returning the number of bytes read
+pub fn (mut c UdpConn) read(mut buf []u8) !(int, Addr) {
+	return c.read_ptr(buf.data, buf.len)!
 }
 
 pub fn (c &UdpConn) read_deadline() !time.Time {
@@ -160,7 +165,7 @@ pub fn (mut c UdpConn) set_write_timeout(t time.Duration) {
 }
 
 @[inline]
-pub fn (mut c UdpConn) wait_for_read() ! {
+pub fn (c &UdpConn) wait_for_read() ! {
 	return wait_for_read(c.sock.handle, c.read_deadline, c.read_timeout)
 }
 
@@ -269,18 +274,21 @@ pub fn (mut s UdpSocket) set_dualstack(on bool) ! {
 		sizeof(int)))!
 }
 
-fn (mut s UdpSocket) close() ! {
+// close shuts down and closes the socket for communication.
+pub fn (mut s UdpSocket) close() ! {
 	shutdown(s.handle)
 	return close(s.handle)
 }
 
-fn (mut s UdpSocket) select(test Select, timeout time.Duration) !bool {
+// select waits for no more than `timeout` for the IO operation, defined by `test`, to be available.
+pub fn (mut s UdpSocket) select(test Select, timeout time.Duration) !bool {
 	return select(s.handle, test, timeout)
 }
 
-fn (s &UdpSocket) remote() !Addr {
+// remote returns the remote `Addr` address of the socket or `none` if no remote is has been resolved.
+pub fn (s &UdpSocket) remote() ?Addr {
 	if s.has_r {
 		return s.r
 	}
-	return error('none')
+	return none
 }

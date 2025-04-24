@@ -7,6 +7,8 @@ module builtin
 // g_original_codepage - used to restore the original windows console code page when exiting
 __global g_original_codepage = u32(0)
 
+// See https://learn.microsoft.com/en-us/windows/win32/winprog/windows-data-types
+// See https://www.codeproject.com/KB/string/cppstringguide1.aspx
 pub type C.BOOL = int
 
 pub type C.HINSTANCE = voidptr
@@ -24,6 +26,20 @@ pub type C.HGLOBAL = voidptr
 pub type C.HANDLE = voidptr
 
 pub type C.LRESULT = voidptr
+
+pub type C.CHAR = char
+
+pub type C.TCHAR = u16 // It is u8 if UNICODE is not defined, but for V programs it always is
+
+pub type C.WCHAR = u16
+
+pub type C.LPSTR = &char
+
+pub type C.LPWSTR = &C.WCHAR
+
+pub type C.LPTSTR = &C.TCHAR
+
+pub type C.LPCTSTR = &C.TCHAR
 
 // utf8 to stdout needs C.SetConsoleOutputCP(cp_utf8)
 fn C.GetConsoleOutputCP() u32
@@ -67,6 +83,9 @@ fn builtin_init() {
 	$if !no_backtrace ? {
 		add_unhandled_exception_handler()
 	}
+	// On windows, the default buffering is block based (~4096bytes), which interferes badly with non cmd shells
+	// It is much better to have it off by default instead.
+	unbuffer_stdout()
 }
 
 // TODO: copypaste from os
@@ -109,7 +128,7 @@ fn unhandled_exception_handler(e &ExceptionPointers) int {
 			return 0
 		}
 		else {
-			println('Unhandled Exception 0x${e.exception_record.code:X}')
+			println('Unhandled Exception 0x' + ptr_str(e.exception_record.code))
 			print_backtrace_skipping_top_frames(5)
 		}
 	}

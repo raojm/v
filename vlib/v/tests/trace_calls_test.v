@@ -1,3 +1,4 @@
+// vtest build: !(os_id_ubuntu? && musl?)
 import os
 
 const vexe = @VEXE
@@ -48,7 +49,7 @@ struct CmdOutput {
 }
 
 fn run(fpath string, compiler_opts string, label string) CmdOutput {
-	cmd := '${os.quoted_path(vexe)} ${compiler_opts} -trace-calls run ${os.quoted_path(fpath)}'
+	cmd := '${os.quoted_path(vexe)} ${compiler_opts} -no-skip-unused -trace-calls run ${os.quoted_path(fpath)}'
 	res := os.execute(cmd)
 	if res.exit_code != 0 {
 		eprintln('> ${label} compilation output:\n${res.output}')

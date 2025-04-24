@@ -95,7 +95,7 @@ fn (mut p Parser) parse_array_type(expecting token.Kind, is_option bool) ast.Typ
 			p.error_with_pos('fixed size cannot be zero or negative', size_expr.pos())
 		}
 		idx := p.table.find_or_register_array_fixed(elem_type, fixed_size, size_expr,
-			p.fixed_array_dim == 1 && !is_option && p.inside_fn_return)
+			p.array_dim == 1 && p.fixed_array_dim == 1 && !is_option && p.inside_fn_return)
 		if elem_type.has_flag(.generic) {
 			return ast.new_type(idx).set_flag(.generic)
 		}
@@ -479,7 +479,7 @@ fn (mut p Parser) parse_type() ast.Type {
 		is_attr := p.tok.kind == .at
 
 		if p.tok.line_nr > line_nr || p.tok.kind in [.comma, .rpar, .assign]
-			|| (is_attr || is_required_field) {
+			|| (is_attr || is_required_field) || p.tok.kind == .comment {
 			mut typ := ast.void_type
 			if is_option {
 				typ = typ.set_flag(.option)
@@ -525,7 +525,11 @@ fn (mut p Parser) parse_type() ast.Type {
 	if p.tok.kind == .key_struct {
 		p.anon_struct_decl = p.struct_decl(true)
 		// Find the registered anon struct type, it was registered above in `p.struct_decl()`
-		return p.table.find_type_idx(p.anon_struct_decl.name)
+		mut typ := p.table.find_type_idx(p.anon_struct_decl.name)
+		if is_option {
+			typ = ast.new_type(typ).set_flag(.option)
+		}
+		return typ
 	}
 
 	language := p.parse_language()
@@ -646,6 +650,10 @@ fn (mut p Parser) parse_any_type(language ast.Language, is_ptr bool, check_dot b
 		}
 		.lsbr, .nilsbr {
 			// array
+			p.array_dim++
+			defer {
+				p.array_dim--
+			}
 			return p.parse_array_type(p.tok.kind, is_option)
 		}
 		else {
@@ -872,6 +880,9 @@ fn (mut p Parser) parse_generic_inst_type(name string) ast.Type {
 	if p.generic_type_level > generic_type_level_cutoff_limit {
 		p.error('too many levels of Parser.parse_generic_inst_type() calls: ${p.generic_type_level}, probably due to too many layers embedded generic type')
 		return ast.void_type
+	}
+	if p.tok.kind == .lt {
+		p.error('The generic symbol `<>` is obsolete, please replace it with `[]`')
 	}
 	mut bs_name := name
 	mut bs_cname := name

@@ -22,7 +22,7 @@ mut:
 
 struct Decoder {}
 
-fn (d &Decoder) decode[T](typ T) T {
+fn (d &Decoder) decode[T](mut typ T) T {
 	$for field in T.fields {
 		$if field.is_option {
 			if typ.$(field.name) != none {
@@ -36,7 +36,7 @@ fn (d &Decoder) decode[T](typ T) T {
 
 fn test_comptime() {
 	d := Decoder{}
-	result := d.decode(StructType{
+	result := d.decode(mut StructType{
 		a: 'foo'
 		b: 3
 	})
@@ -205,7 +205,7 @@ fn test_opt_none() {
 	t7 := {
 		'foo': 'bar'
 	}
-	t6 := if t5 != none { t5?.clone() } else { t7 }
+	t6 := if t5 != none { t5.clone() } else { t7 }
 	assert t5 == none
 	assert t6.len == 1
 }

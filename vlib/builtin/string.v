@@ -134,7 +134,7 @@ pub fn tos2(s &u8) string {
 // It will panic, when the pointer `s` is 0.
 // It is the same as `tos2`, but for &char pointers, avoiding callsite casts.
 // See also `tos_clone`.
-@[unsafe]
+@[markused; unsafe]
 pub fn tos3(s &char) string {
 	if s == 0 {
 		panic('tos3: nil string')
@@ -151,7 +151,7 @@ pub fn tos3(s &char) string {
 // It returns '', when given a 0 pointer `s`, it does NOT panic.
 // It is the same as `tos5`, but for &u8 pointers, avoiding callsite casts.
 // See also `tos_clone`.
-@[unsafe]
+@[markused; unsafe]
 pub fn tos4(s &u8) string {
 	if s == 0 {
 		return ''
@@ -168,7 +168,7 @@ pub fn tos4(s &u8) string {
 // It returns '', when given a 0 pointer `s`, it does NOT panic.
 // It is the same as `tos4`, but for &char pointers, avoiding callsite casts.
 // See also `tos_clone`.
-@[unsafe]
+@[markused; unsafe]
 pub fn tos5(s &char) string {
 	if s == 0 {
 		return ''
@@ -332,7 +332,7 @@ fn (a string) clone_static() string {
 
 // option_clone_static returns an independent copy of a given array when lhs is an option type.
 // It should be used only in -autofree generated code.
-@[inline; markused]
+@[inline]
 fn (a string) option_clone_static() ?string {
 	return ?string(a.clone())
 }
@@ -383,7 +383,7 @@ pub fn (s string) replace(rep string, with string) string {
 	mut stack_idxs := [replace_stack_buffer_size]int{}
 	mut pidxs := unsafe { &stack_idxs[0] }
 	if pidxs_cap > replace_stack_buffer_size {
-		pidxs = unsafe { &int(malloc(sizeof(int) * pidxs_cap)) }
+		pidxs = unsafe { &int(malloc(int(sizeof(int)) * pidxs_cap)) }
 	}
 	defer {
 		if pidxs_cap > replace_stack_buffer_size {
@@ -392,7 +392,7 @@ pub fn (s string) replace(rep string, with string) string {
 	}
 	mut idx := 0
 	for {
-		idx = s.index_after(rep, idx)
+		idx = s.index_after_(rep, idx)
 		if idx == -1 {
 			break
 		}
@@ -463,7 +463,7 @@ pub fn (s string) replace_each(vals []string) string {
 		with := vals[rep_i + 1]
 
 		for {
-			idx = s_.index_after(rep, idx)
+			idx = s_.index_after_(rep, idx)
 			if idx == -1 {
 				break
 			}
@@ -636,13 +636,13 @@ pub fn (s string) i64() i64 {
 // f32 returns the value of the string as f32 `'1.0'.f32() == f32(1)`.
 @[inline]
 pub fn (s string) f32() f32 {
-	return f32(strconv.atof64(s) or { 0 })
+	return f32(strconv.atof64(s, allow_extra_chars: true) or { 0 })
 }
 
 // f64 returns the value of the string as f64 `'1.0'.f64() == f64(1)`.
 @[inline]
 pub fn (s string) f64() f64 {
-	return strconv.atof64(s) or { 0 }
+	return strconv.atof64(s, allow_extra_chars: true) or { 0 }
 }
 
 // u8_array returns the value of the hex/bin string as u8 array.
@@ -1108,6 +1108,18 @@ pub fn (s string) split_into_lines() []string {
 	return res
 }
 
+// split_by_space splits the string by whitespace (any of ` `, `\n`, `\t`, `\v`, `\f`, `\r`).
+// Repeated, trailing or leading whitespaces will be omitted.
+pub fn (s string) split_by_space() []string {
+	mut res := []string{}
+	for word in s.split_any(' \n\t\v\f\r') {
+		if word != '' {
+			res << word
+		}
+	}
+	return res
+}
+
 // substr returns the string between index positions `start` and `end`.
 // Example: assert 'ABCD'.substr(1,3) == 'BC'
 @[direct_array_access]
@@ -1115,7 +1127,8 @@ pub fn (s string) substr(start int, _end int) string {
 	end := if _end == max_int { s.len } else { _end } // max_int
 	$if !no_bounds_checking {
 		if start > end || start > s.len || end > s.len || start < 0 || end < 0 {
-			panic('substr(${start}, ${end}) out of bounds (len=${s.len}) s="${s}"')
+			panic('substr(' + start.str() + ', ' + end.str() + ') out of bounds (len=' +
+				s.len.str() + ') s=' + s)
 		}
 	}
 	len := end - start
@@ -1153,7 +1166,8 @@ pub fn (s string) substr_unsafe(start int, _end int) string {
 pub fn (s string) substr_with_check(start int, _end int) !string {
 	end := if _end == max_int { s.len } else { _end } // max_int
 	if start > end || start > s.len || end > s.len || start < 0 || end < 0 {
-		return error('substr(${start}, ${end}) out of bounds (len=${s.len})')
+		return error('substr(' + start.str() + ', ' + end.str() + ') out of bounds (len=' +
+			s.len.str() + ')')
 	}
 	len := end - start
 	if len == s.len {
@@ -1247,13 +1261,6 @@ pub fn (s string) index(p string) ?int {
 	return idx
 }
 
-// index_last returns the position of the first character of the *last* occurrence of the `needle` string in `s`.
-@[deprecated: 'use `.last_index(needle string)` instead']
-@[deprecated_after: '2024-03-27']
-pub fn (s string) index_last(needle string) ?int {
-	return s.last_index(needle)
-}
-
 // last_index returns the position of the first character of the *last* occurrence of the `needle` string in `s`.
 @[inline]
 pub fn (s string) last_index(needle string) ?int {
@@ -1277,7 +1284,7 @@ fn (s string) index_kmp(p string) int {
 	mut stack_prefixes := [kmp_stack_buffer_size]int{}
 	mut p_prefixes := unsafe { &stack_prefixes[0] }
 	if p.len > kmp_stack_buffer_size {
-		p_prefixes = unsafe { &int(vcalloc(p.len * sizeof(int))) }
+		p_prefixes = unsafe { &int(vcalloc(p.len * int(sizeof(int)))) }
 	}
 	defer {
 		if p.len > kmp_stack_buffer_size {
@@ -1345,7 +1352,36 @@ fn (s string) index_last_(p string) int {
 
 // index_after returns the position of the input string, starting search from `start` position.
 @[direct_array_access]
-pub fn (s string) index_after(p string, start int) int {
+pub fn (s string) index_after(p string, start int) ?int {
+	if p.len > s.len {
+		return none
+	}
+	mut strt := start
+	if start < 0 {
+		strt = 0
+	}
+	if start >= s.len {
+		return none
+	}
+	mut i := strt
+	for i < s.len {
+		mut j := 0
+		mut ii := i
+		for j < p.len && unsafe { s.str[ii] == p.str[j] } {
+			j++
+			ii++
+		}
+		if j == p.len {
+			return i
+		}
+		i++
+	}
+	return none
+}
+
+// index_after_ returns the position of the input string, starting search from `start` position.
+@[direct_array_access]
+pub fn (s string) index_after_(p string, start int) int {
 	if p.len > s.len {
 		return -1
 	}
@@ -1384,17 +1420,8 @@ pub fn (s string) index_u8(c u8) int {
 	return -1
 }
 
-// index_u8_last returns the index of the *last* occurrence of the byte `c` (if found) in the string.
-// It returns -1, if `c` is not found.
-@[deprecated: 'use `.last_index_u8(c u8)` instead']
-@[deprecated_after: '2024-06-30']
-@[inline]
-pub fn (s string) index_u8_last(c u8) int {
-	return s.last_index_u8(c)
-}
-
 // last_index_u8 returns the index of the last occurrence of byte `c` if it was found in the string.
-@[inline]
+@[direct_array_access; inline]
 pub fn (s string) last_index_u8(c u8) int {
 	for i := s.len - 1; i >= 0; i-- {
 		if s[i] == c {
@@ -1431,7 +1458,7 @@ pub fn (s string) count(substr string) int {
 
 	mut i := 0
 	for {
-		i = s.index_after(substr, i)
+		i = s.index_after_(substr, i)
 		if i == -1 {
 			return n
 		}
@@ -1962,7 +1989,7 @@ pub fn (s string) str() string {
 fn (s string) at(idx int) u8 {
 	$if !no_bounds_checking {
 		if idx < 0 || idx >= s.len {
-			panic('string index out of range: ${idx} / ${s.len}')
+			panic_n2('string index out of range(idx,s.len):', idx, s.len)
 		}
 	}
 	return unsafe { s.str[idx] }
@@ -2355,7 +2382,7 @@ pub fn (a []string) join(sep string) string {
 	return res
 }
 
-// join joins a string array into a string using a `\n` newline delimiter.
+// join_lines joins a string array into a string using a `\n` newline delimiter.
 @[inline]
 pub fn (s []string) join_lines() string {
 	return s.join('\n')

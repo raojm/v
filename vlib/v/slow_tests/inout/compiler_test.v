@@ -1,3 +1,4 @@
+// vtest build: !self_sandboxed_packaging?
 // .out file:
 // To test a panic, remove everything after the long `===` line
 // You can also remove the line with 'line:' e.g. for a builtin fn
@@ -7,6 +8,7 @@ import term
 import v.util.diff
 import v.util.vtest
 
+@[markused]
 const turn_off_vcolors = os.setenv('VCOLORS', 'never', true)
 
 const v_ci_ubuntu_musl = os.getenv('V_CI_UBUNTU_MUSL').len > 0

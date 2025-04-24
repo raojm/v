@@ -80,7 +80,7 @@ Note: On Ubuntu/Debian, you may need to run `sudo apt install git build-essentia
 
 To get started, execute the following in your terminal/shell:
 ```bash
-git clone https://github.com/vlang/v
+git clone --depth=1 https://github.com/vlang/v
 cd v
 make
 ```
@@ -168,7 +168,7 @@ shell/editor after that, so that it can pick up the new PATH variable.
 ```bash
 # xbps-install -Su base-devel
 # xbps-install libatomic-devel
-$ git clone https://github.com/vlang/v
+$ git clone --depth=1 https://github.com/vlang/v
 $ cd v
 $ make
 ```
@@ -179,7 +179,7 @@ $ make
 
 
 ```bash
-git clone https://github.com/vlang/v
+git clone --depth=1 https://github.com/vlang/v
 cd v
 docker build -t vlang .
 docker run --rm -it vlang:latest
@@ -188,7 +188,7 @@ docker run --rm -it vlang:latest
 ### Docker with Alpine/musl
 
 ```bash
-git clone https://github.com/vlang/v
+git clone --depth=1 https://github.com/vlang/v
 cd v
 docker build -t vlang_alpine - < Dockerfile.alpine
 alias with_alpine='docker run -u 1000:1000 --rm -it -v .:/src -w /src vlang_alpine:latest'
@@ -219,27 +219,24 @@ Linux/macos:
 
 ```bash
 pkg install clang libexecinfo libgc libgc-static make git
-git clone https://github.com/vlang/v
+git clone --depth=1 https://github.com/vlang/v
 cd v
 make
 ```
 
 ## Editor/IDE Plugins
 
+- [Atom](https://github.com/vlang/awesome-v#atom)
+- [Emacs](https://github.com/vlang/awesome-v#emacs)
+- [JetBrains](https://plugins.jetbrains.com/plugin/20287-vlang/docs/syntax-highlighting.html)
+- [Sublime Text 3](https://github.com/vlang/awesome-v#sublime-text-3)
+- [Vim](https://github.com/vlang/awesome-v#vim)
+- [VS Code](https://marketplace.visualstudio.com/items?itemName=VOSCA.vscode-v-analyzer)
+- [zed](https://github.com/lv37/zed-v)
+
+
 To bring IDE functions for the V programming languages to your editor, check out
-[v-analyzer](https://github.com/vlang/v-analyzer). It provides a
-[VS Code extension](https://marketplace.visualstudio.com/items?itemName=VOSCA.vscode-v-analyzer)
-and language server capabilities for other editors.
-
-The plugin for JetBrains IDEs (IntelliJ, CLion, GoLand, etc.) also offers a great development
-experience with V. You can find all features in [its documentation](https://plugins.jetbrains.com/plugin/20287-vlang/docs/syntax-highlighting.html).
-
-Other Plugins:
-
-- [Vim plugins](https://github.com/vlang/awesome-v#vim)
-- [Emacs plugins](https://github.com/vlang/awesome-v#emacs)
-- [Sublime Text 3 plugins](https://github.com/vlang/awesome-v#sublime-text-3)
-- [Atom plugins](https://github.com/vlang/awesome-v#atom)
+[v-analyzer](https://github.com/vlang/v-analyzer). It provides language server capabilities.
 
 ## Testing and running the examples
 
@@ -266,16 +263,21 @@ v run news_fetcher.v
 v run tetris/tetris.v
 ```
 
+
 <img src='https://raw.githubusercontent.com/vlang/v/master/examples/tetris/screenshot.png' width=300 alt='tetris screenshot'>
 
-In order to build Tetris or 2048 (or anything else using `sokol` or `gg` graphics modules),
-you will need additional development libraries for your system.
+## Sokol and GG GUI apps/games:
+
+In order to build Tetris or 2048 (or anything else using the `sokol` or `gg` graphics modules),
+you will need to install additional development libraries for your system.
 
 | System              | Installation method                                                                                |
 |---------------------|----------------------------------------------------------------------------------------------------|
-| Debian/Ubuntu based | `sudo apt install libxi-dev libxcursor-dev libgl-dev libasound2-dev`                               |
-| Fedora/RH/CentOS    | `sudo dnf install libXcursor-devel libXi-devel libX11-devel libglvnd-devel`                        |
-| NixOS               | add `xorg.libX11.dev xorg.libXcursor.dev xorg.libXi.dev libGL.dev` to `environment.systemPackages` |
+| Debian/Ubuntu based | Run `sudo apt install libxi-dev libxcursor-dev libgl-dev libxrandr-dev libasound2-dev`             |
+| Fedora/RH/CentOS    | Run `sudo dnf install libXi-devel libXcursor-devel libX11-devel libXrandr-devel libglvnd-devel`    |
+|                     |                                                                                                    |
+| NixOS               | Add `xorg.libX11.dev xorg.libXcursor.dev xorg.libXi.dev xorg.libXrandr.dev libGL.dev` to           |
+|                     | to `environment.systemPackages`                                                                    |
 
 ## V net.http, net.websocket, `v install`
 
@@ -283,6 +285,13 @@ The net.http module, the net.websocket module, and the `v install` command may a
 V comes with a version of mbedtls, which should work on all systems. If you find a need to
 use OpenSSL instead, you will need to make sure that it is installed on your system, then
 use the `-d use_openssl` switch when you compile.
+
+Note: Mbed-TLS is smaller and easier to install on windows too (V comes with it), but if you
+write programs, that do lots of http requests to HTTPS/SSL servers, in most cases, it is *best*
+to compile with `-d use_openssl`, and do so on a system, where you do have OpenSSL installed
+(see below). Mbed-TLS is slower, and can have more issues, especially when you are doing parallel
+http requests to multiple hosts (for example in web scrapers, REST API clients, RSS readers, etc).
+On windows, it is better to run such programs in WSL2.
 
 To install OpenSSL on non-Windows systems:
 
@@ -319,7 +328,7 @@ https://github.com/vlang/ui
 <!---
 ## JavaScript backend
 
-[examples/hello_v_js.v](examples/hello_v_js.v):
+[examples/js_hello_world.v](examples/js_hello_world.v):
 
 ```v
 fn main() {
@@ -330,7 +339,7 @@ fn main() {
 ```
 
 ```bash
-v -o hi.js examples/hello_v_js.v && node hi.js
+v -o hi.js examples/js_hello_world.v && node hi.js
 Hello from V.js
 Hello from V.js
 Hello from V.js
@@ -351,7 +360,7 @@ With V's `vab` tool, building V UI and graphical apps for Android can become as 
 ## Developing web applications
 
 Check out the
-[Building a simple web blog](https://github.com/vlang/v/blob/master/tutorials/building_a_simple_web_blog_with_vweb/README.md)
+[Building a simple web blog](https://github.com/vlang/v/blob/master/tutorials/building_a_simple_web_blog_with_veb/README.md)
 tutorial and Gitly, a light and fast alternative to GitHub/GitLab:
 
 https://github.com/vlang/gitly
@@ -370,12 +379,18 @@ https://github.com/vlang/vinix
 
 ## Acknowledgement
 
+### TCC
+
 V thanks Fabrice Bellard for his original work on the
 [TCC - Tiny C Compiler](https://bellard.org/tcc/).
 Note the TCC website is old; the current TCC repository can be found
 [here](https://repo.or.cz/w/tinycc.git).
 V utilizes pre-built TCC binaries located at
 [https://github.com/vlang/tccbin/](https://github.com/vlang/tccbin/).
+
+### PVS-Studio
+
+[PVS-Studio](https://pvs-studio.com/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - static analyzer for C, C++, C#, and Java code.
 
 ## Troubleshooting
 

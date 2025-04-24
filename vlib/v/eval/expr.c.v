@@ -222,11 +222,18 @@ pub fn (mut e Eval) expr(expr ast.Expr, expecting ast.Type) Object {
 					return e.local_vars[expr.name].val
 				}
 				.constant {
+					key := expr.name.all_after_last('.')
 					return if expr.name.contains('.') {
 						e.mods[expr.name.all_before_last('.')]
 					} else {
 						e.mods[e.cur_mod]
-					}[expr.name.all_after_last('.')] or { ast.EmptyStmt{} } as Object
+					}[key] or {
+						if builtin_constant := e.mods['builtin'][key] {
+							builtin_constant
+						} else {
+							e.error('unknown constant `${key}`')
+						}
+					} as Object
 				}
 				else {
 					e.error('unknown ident kind for `${expr.name}`: ${expr.kind}')
@@ -572,12 +579,15 @@ pub fn (mut e Eval) expr(expr ast.Expr, expecting ast.Type) Object {
 			}
 			e.error('unhandled index expression ${left}[ ${index} ]')
 		}
+		ast.OrExpr {
+			e.error('unhandled expression ${typeof(expr).name}')
+		}
 		ast.AnonFn, ast.ArrayDecompose, ast.AsCast, ast.Assoc, ast.AtExpr, ast.CTempVar,
 		ast.ChanInit, ast.Comment, ast.ComptimeCall, ast.ComptimeSelector, ast.ComptimeType,
 		ast.ConcatExpr, ast.DumpExpr, ast.EmptyExpr, ast.EnumVal, ast.GoExpr, ast.SpawnExpr,
 		ast.IfGuardExpr, ast.IsRefType, ast.Likely, ast.LockExpr, ast.MapInit, ast.MatchExpr,
-		ast.Nil, ast.None, ast.OffsetOf, ast.OrExpr, ast.RangeExpr, ast.SelectExpr, ast.SqlExpr,
-		ast.TypeNode, ast.TypeOf, ast.LambdaExpr {
+		ast.Nil, ast.None, ast.OffsetOf, ast.RangeExpr, ast.SelectExpr, ast.SqlExpr, ast.TypeNode,
+		ast.TypeOf, ast.LambdaExpr {
 			e.error('unhandled expression ${typeof(expr).name}')
 		}
 	}

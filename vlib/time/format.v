@@ -142,7 +142,7 @@ pub fn (t Time) format_ss_nano() string {
 // format_rfc3339 returns a date string in "YYYY-MM-DDTHH:mm:ss.123Z" format (24 hours, see https://www.rfc-editor.org/rfc/rfc3339.html)
 // RFC3339 is an Internet profile, based on the ISO 8601 standard for for representation of dates and times using the Gregorian calendar.
 // It is intended to improve consistency and interoperability, when representing and using date and time in Internet protocols.
-@[manualfree; markused]
+@[manualfree]
 pub fn (t Time) format_rfc3339() string {
 	mut buf := [u8(`0`), `0`, `0`, `0`, `-`, `0`, `0`, `-`, `0`, `0`, `T`, `0`, `0`, `:`, `0`,
 		`0`, `:`, `0`, `0`, `.`, `0`, `0`, `0`, `Z`]
@@ -416,14 +416,13 @@ pub fn (t Time) custom_format(s string) string {
 				sb.write_string(ordinal_suffix(t.day))
 			}
 			'DDD' {
-				sb.write_string((t.day + days_before[t.month - 1] + int(is_leap_year(t.year))).str())
+				sb.write_string((t.year_day()).str())
 			}
 			'DDDD' {
-				sb.write_string('${t.day + days_before[t.month - 1] + int(is_leap_year(t.year)):03}')
+				sb.write_string('${t.year_day():03}')
 			}
 			'DDDo' {
-				sb.write_string(ordinal_suffix(t.day + days_before[t.month - 1] +
-					int(is_leap_year(t.year))))
+				sb.write_string(ordinal_suffix(t.year_day()))
 			}
 			'd' {
 				sb.write_string('${t.day_of_week() % 7}')
@@ -484,16 +483,13 @@ pub fn (t Time) custom_format(s string) string {
 				sb.write_string('${(t.hour + 1):02}')
 			}
 			'w' {
-				sb.write_string('${mceil((t.day + days_before[t.month - 1] +
-					int(is_leap_year(t.year))) / 7):.0}')
+				sb.write_string('${t.week_of_year():.0}')
 			}
 			'ww' {
-				sb.write_string('${mceil((t.day + days_before[t.month - 1] +
-					int(is_leap_year(t.year))) / 7):02.0}')
+				sb.write_string('${t.week_of_year():02.0}')
 			}
 			'wo' {
-				sb.write_string(ordinal_suffix(int(mceil((t.day + days_before[t.month - 1] +
-					int(is_leap_year(t.year))) / 7))))
+				sb.write_string(ordinal_suffix(t.week_of_year()))
 			}
 			'Q' {
 				sb.write_string('${(t.month % 4) + 1}')

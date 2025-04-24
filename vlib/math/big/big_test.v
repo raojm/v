@@ -194,7 +194,7 @@ const sub_test_data = [
 	SubTest{ 2, 100, -98},
 	SubTest{ -100, -2, -98},
 	SubTest{ 100, -2, 102},
-	SubTest{ 2, -100, 102},	
+	SubTest{ 2, -100, 102},
 	//
 	SubTest{ 2, 3, -1 },
 	SubTest{ 3, 2, 1 },
@@ -218,10 +218,10 @@ struct MulTest {
 // vfmt off
 const mul_test_data = [
 	MulTest{ 2, 3, 6 },
-	MulTest{ -2, 0, 0}, 
-	MulTest{  2, 0, 0}, 
-	MulTest{ 0, -2, 0}, 
-	MulTest{ 0, -2, 0}, 
+	MulTest{ -2, 0, 0},
+	MulTest{  2, 0, 0},
+	MulTest{ 0, -2, 0},
+	MulTest{ 0, -2, 0},
 	MulTest{ -869, 789, -685641 },
 	MulTest{ 869, -789, -685641 },
 	MulTest{ -869, -789, 685641 },
@@ -264,6 +264,7 @@ const div_mod_test_data = [
 		'629648864382619361826',
 		'2724578611525334851445652767465274410979805962941953382558409365935061481311529445551691298696266856092833571769883246719',
 	},
+     DivModTest{'1', '115792089237316195423570985008687907853269984665640564039457584007908834671663', '0', '1'},
 ]
 // vfmt on
 
@@ -848,4 +849,24 @@ fn test_set_bit() {
 	b := a
 	a.set_bit(100, false)
 	assert a == b
+}
+
+fn test_integer_from_bytes_ignores_potential_leading_zero_bytes() {
+	bint0 := big.integer_from_int(0)
+	for j in 0 .. 10 {
+		assert bint0 == big.integer_from_bytes([]u8{len: j}, signum: 1)
+		assert bint0 == big.integer_from_bytes([]u8{len: j}, signum: 0)
+		assert bint0 == big.integer_from_bytes([]u8{len: j}, signum: -1)
+	}
+	for i in 0 .. 10 {
+		bint := big.integer_from_int(i)
+		nbint := big.integer_from_int(-i)
+		for j in 0 .. 15 {
+			mut input := []u8{len: j}
+			input << i
+			assert bint == big.integer_from_bytes(input)
+			assert bint == big.integer_from_bytes(input, signum: 1)
+			assert nbint == big.integer_from_bytes(input, signum: -1)
+		}
+	}
 }

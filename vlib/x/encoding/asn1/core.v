@@ -33,7 +33,6 @@ const max_universal_tagnumber = 255
 // Its big enough to accomodate and represent different of yours own tag number.
 // Its represents 2 bytes length where maximum bytes arrays to represent tag number
 // in multibyte (long) form is `[u8(0x1f), 0xff, 0x7f]` or 16383 in base 128.
-@[noinit]
 pub struct Tag {
 mut:
 	class       TagClass = .universal
@@ -209,11 +208,6 @@ fn (t Tag) str() string {
 	form := if t.constructed { 'true' } else { 'false' }
 	number := t.number.str()
 	return '${cls}-${form}-${number}'
-}
-
-// uniqid_with_id the id of this tag for special purposes identifying in decode
-fn (t Tag) uniqid_with_id(id string) string {
-	return '${t.str()}-${id}'
 }
 
 // bytes_len tells amount of bytes needed to store tag in base 128
@@ -523,24 +517,6 @@ fn universal_tag_from_int(v int) !Tag {
 			return Tag{.universal, false, v}
 		}
 		// vfmt on
-	}
-}
-
-// Params is optional params passed to encode or decodeing
-// of tag, length or ASN.1 element to drive how encoding works.
-@[params]
-struct Params {
-mut:
-	rule EncodingRule = .der
-}
-
-fn default_params() &Params {
-	return &Params{}
-}
-
-fn params_with_rule(rule EncodingRule) &Params {
-	return &Params{
-		rule: .der
 	}
 }
 

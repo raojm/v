@@ -24,7 +24,7 @@ Anything you can do in other languages, you can do in V.
 The best way to get the latest and greatest V, is to install it from source.
 It is easy, and it takes only a few seconds:
 ```bash
-git clone https://github.com/vlang/v
+git clone --depth=1 https://github.com/vlang/v
 cd v
 make
 ```
@@ -87,6 +87,7 @@ by using any of the following commands in a terminal:
 
 * [Module imports](#module-imports)
     * [Selective imports](#selective-imports)
+    * [Module hierarchy](#module-hierarchy)
     * [Module import aliasing](#module-import-aliasing)
 * [Statements & expressions](#statements--expressions)
     * [If](#if)
@@ -194,6 +195,7 @@ by using any of the following commands in a terminal:
     * [Performance tuning](#performance-tuning)
     * [Atomics](#atomics)
     * [Global Variables](#global-variables)
+    * [Static Variables](#static-variables)
     * [Cross compilation](#cross-compilation)
     * [Debugging](#debugging)
         * [C Backend binaries Default](#c-backend-binaries-default)
@@ -260,7 +262,7 @@ As in many other languages (such as C, Go, and Rust), `main` is the entry point 
 [`println`](#println) is one of the few [built-in functions](#builtin-functions).
 It prints the value passed to it to standard output.
 
-`fn main()` declaration can be skipped in one file programs.
+`fn main()` declaration can be skipped in single file programs.
 This is useful when writing small programs, "scripts", or just learning the language.
 For brevity, `fn main()` will be skipped in this tutorial.
 
@@ -487,7 +489,7 @@ that is already used in a parent scope will cause a compilation error.
 ```v failcompile nofmt
 fn main() {
 	a := 10
-	if true {
+	{
 		a := 20 // error: redefinition of `a`
 	}
 }
@@ -529,8 +531,6 @@ f32 f64
 isize, usize // platform-dependent, the size is how many bytes it takes to reference any location in memory
 
 voidptr // this one is mostly used for [C interoperability](#v-and-c)
-
-any // similar to C's void* and Go's interface{}
 ```
 
 > [!NOTE]
@@ -575,14 +575,28 @@ d := b + x     // d is of type `f64` - automatic promotion of `x`'s value
 
 ### Strings
 
-```v nofmt
+In V, strings are encoded in UTF-8, and are immutable (read-only) by default:
+
+```v
+s := 'hello 🌎' // the `world` emoji takes 4 bytes, and string length is reported in bytes
+assert s.len == 10
+
+arr := s.bytes() // convert `string` to `[]u8`
+assert arr.len == 10
+
+s2 := arr.bytestr() // convert `[]u8` to `string`
+assert s2 == s
+
 name := 'Bob'
-assert name.len == 3       // will print 3
-assert name[0] == u8(66) // indexing gives a byte, u8(66) == `B`
-assert name[1..3] == 'ob'  // slicing gives a string 'ob'
+assert name.len == 3
+// indexing gives a byte, u8(66) == `B`
+assert name[0] == u8(66)
+// slicing gives a string 'ob'
+assert name[1..3] == 'ob'
 
 // escape codes
-windows_newline := '\r\n'      // escape special characters like in C
+// escape special characters like in C
+windows_newline := '\r\n'
 assert windows_newline.len == 2
 
 // arbitrary bytes can be directly specified using `\x##` notation where `#` is
@@ -599,23 +613,11 @@ assert aardvark_str2 == 'aardvark'
 // and will be converted internally to its UTF-8 representation
 star_str := '\u2605' // ★
 assert star_str == '★'
-assert star_str == '\xe2\x98\x85' // UTF-8 can be specified this way too.
+// UTF-8 can be specified this way too, as individual bytes.
+assert star_str == '\xe2\x98\x85'
 ```
 
-In V, a string is a read-only array of bytes. All Unicode characters are encoded using UTF-8:
-
-```v
-s := 'hello 🌎' // emoji takes 4 bytes
-assert s.len == 10
-
-arr := s.bytes() // convert `string` to `[]u8`
-assert arr.len == 10
-
-s2 := arr.bytestr() // convert `[]u8` to `string`
-assert s2 == s
-```
-
-String values are immutable. You cannot mutate elements:
+Since strings are immutable, you cannot directly change characters in a string:
 
 ```v failcompile
 mut s := 'hello 🌎'
@@ -624,9 +626,9 @@ s[0] = `H` // not allowed
 
 > error: cannot assign to `s[i]` since V strings are immutable
 
-Note that indexing a string will produce a `u8` (byte), not a `rune` nor another `string`. Indexes
-correspond to _bytes_ in the string, not Unicode code points. If you want to convert the `u8` to a
-`string`, use the `.ascii_str()` method on the `u8`:
+Note that indexing a string normally will produce a `u8` (byte), not a `rune` nor another `string`.
+Indexes correspond to _bytes_ in the string, not Unicode code points.
+If you want to convert the `u8` to a `string`, use the `.ascii_str()` method on the `u8`:
 
 ```v
 country := 'Netherlands'
@@ -634,14 +636,27 @@ println(country[0]) // Output: 78
 println(country[0].ascii_str()) // Output: N
 ```
 
-If you want the code point from a specific `string` index or other more advanced 
-utf8 processing and conversions, refer to the
-[vlib/encoding.utf8](https://modules.vlang.io/encoding.utf8.html) module.
+However, you can easily get the runes for a string with the `runes()` method, which will return an
+array of the UTF-8 characters from the string.  You can then index this array.  Just be aware that
+there may be fewer indexes available on the `rune` array than on the bytes in the string, if there
+_are_ any non-ASCII characters.
+
+```v
+mut s := 'hello 🌎'
+// there are 10 bytes in the string (as shown earlier), but only 7 runes, since the `world` emoji
+// only counts as one `rune` (one Unicode character)
+assert s.runes().len == 7
+println(s.runes()[6])
+```
+
+If you want the code point from a specific `string` index or other more advanced UTF-8 processing
+and conversions, refer to the
+[vlib/encoding/utf8](https://modules.vlang.io/encoding.utf8.html) module.
 
 Both single and double quotes can be used to denote strings. For consistency, `vfmt` converts double
 quotes to single quotes unless the string contains a single quote character.
 
-For raw strings, prepend `r`. Escape handling is not done for raw strings:
+Prepend `r` for raw strings. Escapes are not handled, so you will get exacly what you type:
 
 ```v
 s := r'hello\nworld' // the `\n` will be preserved as two characters
@@ -1049,6 +1064,7 @@ An array can be of these types:
 | Thread       | `[]thread int`                       |
 | Reference    | `[]&f64`                             |
 | Shared       | `[]shared MyStructType`              |
+| Option       | `[]?f64`                          |
 
 **Example Code:**
 
@@ -1488,7 +1504,7 @@ Maps are ordered by insertion, like dictionaries in Python. The order is a
 guaranteed language feature. This may change in the future.
 
 See all methods of
-[map](https://modules.vlang.io/index.html#map)
+[map](https://modules.vlang.io/builtin.html#map)
 and
 [maps](https://modules.vlang.io/maps.html).
 
@@ -1577,6 +1593,54 @@ println('Name: ${name}')
 current_os := user_os()
 println('Your OS is ${current_os}.')
 ```
+### Module hierarchy
+
+> [!NOTE]
+> This section is valid when .v files are not in the project's root directory.
+
+Modules names in .v files, must match the name of their directory.
+ 
+A .v file `./abc/source.v` must start with `module abc`. All .v files in this directory 
+belong to the same module `abc`. They should also start with `module abc`.
+
+If you have `abc/def/`, and .v files in both folders, you can `import abc`, but you will have 
+to `import abc.def` too, to get to the symbols in the subfolder. It is independent.
+
+In `module name` statement, name never repeats directory's hierarchy, but only its directory.
+So in `abc/def/source.v` the first line will be `module def`, and not `module abc.def`.
+
+`import module_name` statements must respect file hierarchy, you cannot `import def`, only
+`abc.def`
+
+Refering to a module symbol such as a function or const, only needs module name as prefix:
+
+```v ignore
+module def
+
+// func is a dummy example function.
+pub fn func() {
+	println('func')
+}
+```
+
+can be called like this:
+
+```v ignore
+module main
+
+import def
+
+fn main() {
+	def.func()
+}
+```
+
+A function, located in `abc/def/source.v`, is called with `def.func()`, not `abc.def.func()`
+
+This always implies a *single prefix*, whatever sub-module depth. This behavior flattens 
+modules/sub-modules hierarchy. Should you have two modules with the same name in different
+directories, then you should use Module import aliasing (see below).
+
 
 ### Module import aliasing
 
@@ -1896,6 +1960,23 @@ typ := match c {
 }
 println(typ)
 // 'lowercase'
+```
+
+A match statement also can match the variant types of a `sumtype`. Note that
+in that case, the match is exhaustive, since all variant types are mentioned 
+explicitly, so there is no need for an `else{}` branch.
+
+```v nofmt
+struct Dog {}
+struct Cat {}
+struct Veasel {}
+type Animal = Dog | Cat | Veasel
+a := Animal(Veasel{})
+match a {
+	Dog { println('Bay') }
+	Cat { println('Meow') }
+	Veasel { println('Vrrrrr-eeee') } // see: https://www.youtube.com/watch?v=qTJEDyj2N0Q
+}
 ```
 
 You can also use ranges as `match` patterns. If the value falls within the range
@@ -2338,6 +2419,21 @@ println(p.x) // Struct fields are accessed using a dot
 // Alternative literal syntax
 p = Point{10, 20}
 assert p.x == 10
+```
+
+Struct fields can re-use reserved keywords:
+
+```v
+struct Employee {
+	type string
+	name string
+}
+
+employee := Employee{
+	type: 'FTE'
+	name: 'John Doe'
+}
+println(employee.type)
 ```
 
 ### Heap structs
@@ -3190,7 +3286,7 @@ println([1, 2, 3]) // "[1, 2, 3]"
 println(User{ name: 'Bob', age: 20 }) // "User{name:'Bob', age:20}"
 ```
 
-See also [Array methods](#array-methods).
+See also [String interpolation](#string-interpolation).
 
 <a id='custom-print-of-types'></a>
 
@@ -3368,11 +3464,14 @@ This is a special case of a [sum type](#sum-types) declaration.
 
 ### Enums
 
+An enum is a group of constant integer values, each having its own name,
+whose values start at 0 and increase by 1 for each name listed.
+For example:
 ```v
 enum Color as u8 {
-	red
-	green
-	blue
+	red   // the default start value is 0
+	green // the value is automatically incremented to 1
+	blue  // the final value is now 2
 }
 
 mut color := Color.red
@@ -3384,6 +3483,7 @@ match color {
 	.green { println('the color was green') }
 	.blue { println('the color was blue') }
 }
+println(int(color)) // prints 1
 ```
 
 The enum type can be any integer type, but can be omitted, if it is `int`: `enum Color {`.
@@ -3391,18 +3491,17 @@ The enum type can be any integer type, but can be omitted, if it is `int`: `enum
 Enum match must be exhaustive or have an `else` branch.
 This ensures that if a new enum field is added, it's handled everywhere in the code.
 
-Enum fields cannot re-use reserved keywords. However, reserved keywords may be escaped
-with an @.
+Enum fields can re-use reserved keywords:
 
 ```v
 enum Color {
-	@none
+	none
 	red
 	green
 	blue
 }
 
-color := Color.@none
+color := Color.none
 println(color)
 ```
 
@@ -4268,8 +4367,11 @@ println(compare(1.1, 1.2)) //         -1
 
 ### Spawning Concurrent Tasks
 
-V's model of concurrency is going to be very similar to Go's.
-For now, `spawn foo()` runs `foo()` concurrently in a different thread:
+V's model of concurrency is similar to Go's.
+
+`go foo()` runs `foo()` concurrently in a lightweight thread managed by the V runtime.
+
+`spawn foo()` runs `foo()` concurrently in a different thread:
 
 ```v
 import math
@@ -4296,10 +4398,6 @@ fn main() {
 > have limitations in regard to concurrency,
 > including resource overhead and scalability issues,
 > and might affect performance in cases of high thread count.
-
-There's also a `go` keyword. Right now `go foo()` will be automatically renamed via vfmt
-to `spawn foo()`, and there will be a way to launch a coroutine with `go` (a lightweight
-thread managed by the runtime).
 
 Sometimes it is necessary to wait until a parallel thread has finished. This can
 be done by assigning a *handle* to the started thread and calling the `wait()` method
@@ -4395,18 +4493,20 @@ fn main() {
 
 ### Channels
 
-Channels are the preferred way to communicate between threads. V's channels work basically like
-those in Go. You can push objects into a channel on one end and pop objects from the other end.
-Channels can be buffered or unbuffered and it is possible to `select` from multiple channels.
+Channels are the preferred way to communicate between threads. They allow threads to exchange data
+safely without requiring explicit locking. V's channels are similar to those in Go, enabling you
+to push objects into a channel on one end and pop objects from the other.
+Channels can be buffered or unbuffered, and you can use the `select` statement to monitor multiple
+channels simultaneously.
 
 #### Syntax and Usage
 
-Channels have the type `chan objtype`. An optional buffer length can be specified as the `cap` field
-in the declaration:
+Channels are declared with the type `chan objtype`.
+You can optionally specify a buffer length using the `cap` field:
 
 ```v
 ch := chan int{} // unbuffered - "synchronous"
-ch2 := chan f64{cap: 100} // buffer length 100
+ch2 := chan f64{cap: 100} // buffered with a capacity of 100
 ```
 
 Channels do not have to be declared as `mut`. The buffer length is not part of the type but
@@ -4414,32 +4514,53 @@ a field of the individual channel object. Channels can be passed to threads like
 variables:
 
 ```v
-fn f(ch chan int) {
-	// ...
+import time
+
+fn worker(ch chan int) {
+	for i in 0 .. 5 {
+		ch <- i // push values into the channel
+	}
+}
+
+fn clock(ch chan int) {
+	for i in 0 .. 5 {
+		time.sleep(1 * time.second)
+		println('Clock tick')
+		ch <- (i + 1000) // push a value into the channel
+	}
+	ch.close() // close the channel when done
 }
 
 fn main() {
-	ch := chan int{}
-	spawn f(ch)
-	// ...
+	ch := chan int{cap: 5}
+	spawn worker(ch)
+	spawn clock(ch)
+	for {
+		value := <-ch or { // receive/pop values from the channel
+			println('Channel closed')
+			break
+		}
+		println('Received: ${value}')
+	}
 }
 ```
 
-Objects can be pushed to channels using the arrow operator. The same operator can be used to
-pop objects from the other end:
+#### Buffered Channels
+
+Buffered channels allow you to push multiple items without blocking,
+as long as the buffer is not full:
 
 ```v
-// make buffered channels so pushing does not block (if there is room in the buffer)
-ch := chan int{cap: 1}
-ch2 := chan f64{cap: 1}
-n := 5
-// push
-ch <- n
-ch2 <- 7.3
-mut y := f64(0.0)
-m := <-ch // pop creating new variable
-y = <-ch2 // pop into existing variable
+ch := chan string{cap: 2}
+ch <- 'hello'
+ch <- 'world'
+// ch <- '!' // This would block because the buffer is full
+
+println(<-ch) // "hello"
+println(<-ch) // "world"
 ```
+
+#### Closing Channels
 
 A channel can be closed to indicate that no further objects can be pushed. Any attempt
 to do so will then result in a runtime panic (with the exception of `select` and
@@ -4536,6 +4657,14 @@ if select {
 For special purposes there are some builtin fields and methods:
 
 ```v
+ch := chan int{cap: 2}
+println(ch.try_push(42)) // `.success` if pushed, `.not_ready` if full, `.closed` if closed
+println(ch.len) // Number of items in the buffer
+println(ch.cap) // Buffer capacity
+println(ch.closed) // Whether the channel is closed
+```
+
+```v
 struct Abc {
 	x int
 }
@@ -4570,31 +4699,44 @@ Such variables should be created as `shared` and passed to the thread as such, t
 The underlying `struct` contains a hidden *mutex* that allows locking concurrent access
 using `rlock` for read-only and `lock` for read/write access.
 
+Note: Shared variables must be structs, arrays or maps.
+
+#### Example of Shared Objects
+
 ```v
-struct St {
+struct Counter {
 mut:
-	x int // data to be shared
+	value int
 }
 
-fn (shared b St) g() {
-	lock b {
-		// read/modify/write b.x
+fn (shared counter Counter) increment() {
+	lock counter {
+		counter.value += 1
+		println('Incremented to: ${counter.value}')
 	}
 }
 
 fn main() {
-	shared a := St{
-		x: 10
-	}
-	spawn a.g()
-	// ...
-	rlock a {
-		// read a.x
+	shared counter := Counter{}
+
+	spawn counter.increment()
+	spawn counter.increment()
+
+	rlock counter {
+		println('Final value: ${counter.value}')
 	}
 }
 ```
 
-Shared variables must be structs, arrays or maps.
+### Difference Between Channels and Shared Objects
+
+**Purpose**: 
+- Channels: Used for message passing between threads, ensuring safe communication.
+- Shared objects: Used for direct data sharing and modification between threads.
+
+**Synchronization**: 
+- Channels: Implicit (via channel operations) 
+- Shared objects:  Explicit (via `rlock`/`lock` blocks)
 
 ## JSON
 
@@ -4620,13 +4762,15 @@ struct User {
 	// and decoding will not fail.
 	name string @[required]
 	age  int
-	// Use the `skip` attribute to skip certain fields
+	// Use the `@[skip]` attribute to skip certain fields.
+	// You can also use `@[json: '-']`, and `@[sql: '-']`, which will cause only
+	// the `json` module to skip the field, or only the SQL orm to skip it.
 	foo Foo @[skip]
 	// If the field name is different in JSON, it can be specified
 	last_name string @[json: lastName]
 }
 
-data := '{ "name": "Frodo", "lastName": "Baggins", "age": 25 }'
+data := '{ "name": "Frodo", "lastName": "Baggins", "age": 25, "nullable": null }'
 user := json.decode(User, data) or {
 	eprintln('Failed to decode json, error: ${err}')
 	return
@@ -5367,7 +5511,7 @@ To disable formatting for a block of code, wrap it with `// vfmt off` and
 ### v shader
 
 You can use GPU shaders with V graphical apps. You write your shaders in an
-[annotated GLSL dialect](https://github.com/vlang/v/blob/1d8ece7/examples/sokol/02_cubes_glsl/cube_glsl.glsl)
+[annotated GLSL dialect](https://github.com/vlang/v/blob/master/examples/sokol/02_cubes_glsl/cube_glsl.glsl)
 and use `v shader` to compile them for all supported target platforms.
 
 ```shell
@@ -5375,7 +5519,7 @@ v shader /path/to/project/dir/or/file.v
 ```
 
 Currently you need to
-[include a header and declare a glue function](https://github.com/vlang/v/blob/c14c324/examples/sokol/02_cubes_glsl/cube_glsl.v#L43-L46)
+[include a header and declare a glue function](https://github.com/vlang/v/blob/master/examples/sokol/02_cubes_glsl/cube_glsl.v#L25-L28)
 before using the shader in your code.
 
 ### Profiling
@@ -5699,8 +5843,8 @@ Deprecated functions cause warnings, which cause errors if built with `-prod`. T
 CI breakage, it is advisable to set a future date, ahead of the date when the code is merged. This 
 gives people who actively developed V projects, the chance to see the deprecation notice at least 
 once and fix the uses. Setting a date in the next 30 days, assumes they would have compiled their 
-projects manually at least once, within that time. For small changes, this should be plenty time. 
-For complex changes, this time may need to be longer. 
+projects manually at least once, within that time. For small changes, this should be plenty
+of time. For complex changes, this time may need to be longer. 
 
 Different V projects and maintainers may reasonably choose different deprecation policies. 
 Depending on the type and impact of the change, you may want to consult with them first, before 
@@ -5831,7 +5975,19 @@ fn C.DefWindowProc(hwnd int, msg int, lparam int, wparam int)
 @[callconv: 'fastcall']
 type FastFn = fn (int) bool
 
-// Windows only:
+// Calls to the following function, will have to use its return value somehow.
+// Ignoring it, will emit warnings.
+@[must_use]
+fn f() int {
+	return 42
+}
+
+fn g() {
+	// just calling `f()` here, will produce a warning
+	println(f()) // this is fine, because the return value was used as an argument
+}
+
+// Windows only (and obsolete; instead of it, use `-subsystem windows` when compiling)
 // Without this attribute all graphical apps will have the following behavior on Windows:
 // If run from a console or terminal; keep the terminal open so all (e)println statements can be viewed.
 // If run from e.g. Explorer, by double-click; app is opened, but no terminal is opened, and no
@@ -6172,7 +6328,7 @@ Full list of builtin options:
 |--------------------------------|------------------|-------------------------------|-----------------------------------------------|
 | `windows`, `linux`, `macos`    | `gcc`, `tinyc`   | `amd64`, `arm64`, `aarch64`   | `debug`, `prod`, `test`                       |
 | `darwin`, `ios`, `bsd`         | `clang`, `mingw` | `i386`, `arm32`               | `js`, `glibc`, `prealloc`                     |
-| `freebsd`, `openbsd`, `netbsd` | `msvc`           | `rv64`, `rv32`                | `no_bounds_checking`, `freestanding`          |
+| `freebsd`, `openbsd`, `netbsd` | `msvc`           | `rv64`, `rv32`, `s390x`       | `no_bounds_checking`, `freestanding`          |
 | `android`, `mach`, `dragonfly` | `cplusplus`      | `x64`, `x32`                  | `no_segfault_handler`, `no_backtrace`         |
 | `gnu`, `hpux`, `haiku`, `qnx`  |                  | `little_endian`, `big_endian` | `no_main`, `fast_math`, `apk`, `threads`      |
 | `solaris`, `termux`            |                  |                               | `js_node`, `js_browser`, `js_freestanding`    |
@@ -6855,7 +7011,6 @@ performance, memory usage, or size.
 | `@[packed]`              | Memory usage                    | Potential performance loss                        |
 | `@[minify]`              | Performance, Memory usage       | May break binary serialization/reflection         |
 | `_likely_/_unlikely_`    | Performance                     | Risk of negative performance impact               |
-| `-skip-unused`           | Performance, Compile time, Size | Potential instability                             |
 | `-fast-math`             | Performance                     | Risk of incorrect mathematical operations results |
 | `-d no_segfault_handler` | Compile time, Size              | Loss of segfault trace                            |
 | `-cflags -march=native`  | Performance                     | Risk of reduced CPU compatibility                 |
@@ -6981,15 +7136,6 @@ expression is highly improbable. In the JS backend, that does nothing.
 - When the prediction can be wrong, as it might cause a performance penalty due to branch
 misprediction.
 
-#### `-skip-unused`
-
-This flag tells the V compiler to omit code that is not needed in the final executable to run your
-program correctly. This will remove unneeded `const` arrays allocations and unused functions
-from the code in the generated executable.
-
-This flag will be on by default in the future when its implementation will be stabilized and all
-severe bugs will be found.
-
 **When to Use**
 
 - For production builds where you want to reduce the executable size and improve runtime
@@ -7099,7 +7245,7 @@ rm -f *.profraw
 rm -f default.profdata
 
 # Initial build with PGO instrumentation
-v -cc clang -skip-unused -prod -cflags -fprofile-generate -o pgo_gen .
+v -cc clang -prod -cflags -fprofile-generate -o pgo_gen .
 
 # Run the instrumented executable 10 times
 for i in {1..10}; do
@@ -7110,7 +7256,7 @@ done
 llvm-profdata merge -o default.profdata *.profraw
 
 # Compile the optimized version using the PGO data
-v -cc clang -skip-unused -prod -cflags "-fprofile-use=${CUR_DIR}/default.profdata" -o optimized_program .
+v -cc clang -prod -cflags "-fprofile-use=${CUR_DIR}/default.profdata" -o optimized_program .
 
 # Remove PGO data and instrumented executable
 rm *.profraw
@@ -7251,6 +7397,41 @@ to race conditions. There are several approaches to deal with these:
   correlated, which is acceptable considering the performance penalty that using
   synchronization primitives would represent.
 
+## Static Variables
+
+V also supports *static variables*, which are like *global variables*, but
+available only *inside* a single unsafe function (you can look at them as
+namespaced globals).
+
+Note: their use is discouraged too, for reasons similar to why globals
+are discouraged. The feature is supported to enable translating existing
+low level C code into V code, using `v translate`.
+
+Note: the function in which you use a static variable, has to be marked
+with @[unsafe]. Also unlike using globals, using static variables, do not
+require you to pass the flag `-enable-globals`, because they can only be
+read/changed inside a single function, which has full control over the
+state stored in them.
+
+Here is a small example of how static variables can be used:
+```v
+@[unsafe]
+fn counter() int {
+	mut static x := 42
+	// Note: x is initialised to 42, just _once_.
+	x++
+	return x
+}
+
+fn f() int {
+	return unsafe { counter() }
+}
+
+println(f()) // prints 43
+println(f()) // prints 44
+println(f()) // prints 45
+```
+
 ## Cross compilation
 
 Cross compilation is supported for Windows, Linux and FreeBSD.
@@ -7365,6 +7546,9 @@ For all supported options check the latest help:
 `v help build-js`
 
 ## V and C
+
+The basic mapping between C and V types is described in
+[C and V Type Interoperability](https://github.com/vlang/v/blob/master/doc/c_and_v_type_interoperability.md).
 
 ### Calling C from V
 
@@ -7666,7 +7850,7 @@ Ordinary zero terminated C strings can be converted to V strings with
 > If you need to make a copy of the C string (some libc APIs like `getenv` pretty much require that,
 > since they return pointers to internal libc memory), you can use `cstring_to_vstring(cstring)`.
 
-On Windows, C APIs often return so called `wide` strings (utf16 encoding).
+On Windows, C APIs often return so called `wide` strings (UTF-16 encoding).
 These can be converted to V strings with `string_from_wide(&u16(cwidestring))` .
 
 V has these types for easier interoperability with C:
@@ -7811,26 +7995,36 @@ seamlessly across all platforms.
 However, since the Windows header libraries use extremely generic names such as `Rectangle`,
 this will cause a conflict if you wish to use C code that also has a name defined as `Rectangle`.
 
-For very specific cases like this, we have `#preinclude`.
+For very specific cases like this, V has `#preinclude` and `#postinclude` directives.
 
-This will allow things to be configured before V adds in its built in libraries.
+These directives allow things to be configured *before* V adds in its built in libraries,
+and *after* all of the V code generation has completed (and thus all of the prototypes,
+declarations and definitions are already present).
 
 Example usage:
 ```v ignore
 // This will include before built in libraries are used.
 #preinclude "pre_include.h"
+
 // This will include after built in libraries are used.
 #include "include.h"
+
+// This will include after all of the V code generation is complete,
+// including the one for the main function of the project
+#postinclude "post_include.h"
 ```
 
 An example of what might be included in `pre_include.h`
 can be [found here](https://github.com/irishgreencitrus/raylib.v/blob/main/include/pre.h)
 
-This is an advanced feature, and will not be necessary
-outside of very specific cases with C interop,
-meaning it could cause more issues than it solves.
+The `#postinclude` directive on the other hand is useful for allowing the integration
+of frameworks like SDL3 or Sokol, that insist on having callbacks in your code, instead
+of behaving like ordinary libraries, and allowing you to decide when to call them.
 
-Consider it last resort!
+NOTE: these are advanced features, and will not be necessary outside of very specific cases
+with C interop. Other than those, using them could cause more issues than it solves.
+
+Consider using them as a last resort!
 
 ## Other V Features
 
@@ -7996,11 +8190,15 @@ were made and keep the binary as `tmp.<scriptfilename>`. **Caution**: if this fi
 exists the file will be overridden. If you want to rebuild each time and not keep this binary
 instead use `#!/usr/bin/env -S v -raw-vsh-tmp-prefix tmp run`.
 
+Note: there is a small shell script `cmd/tools/vrun`, that can be useful for systems, that have an
+env program (`/usr/bin/env`), that still does not support an `-S` option (like BusyBox). 
+See https://github.com/vlang/v/blob/master/cmd/tools/vrun for more details.
+
 # Appendices
 
 ## Appendix I: Keywords
 
-V has 44 reserved keywords (3 are literals):
+V has 45 reserved keywords (3 are literals):
 
 ```v ignore
 as
@@ -8019,6 +8217,7 @@ for
 go
 goto
 if
+implements
 import
 in
 interface

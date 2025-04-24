@@ -8,7 +8,7 @@ import v.pref
 import v.token
 import v.util
 import v.pkgconfig
-import v.comptime
+import v.type_resolver
 
 fn (mut c Checker) comptime_call(mut node ast.ComptimeCall) ast.Type {
 	if node.left !is ast.EmptyExpr {
@@ -133,8 +133,9 @@ fn (mut c Checker) comptime_call(mut node ast.ComptimeCall) ast.Type {
 			// check each arg expression
 			node.args[i].typ = c.expr(mut arg.expr)
 		}
+		c.markused_comptimecall(mut node)
 		c.stmts_ending_with_expression(mut node.or_block.stmts, c.expected_or_type)
-		return c.comptime.get_type(node)
+		return c.type_resolver.get_type(node)
 	}
 	if node.method_name == 'res' {
 		if !c.inside_defer {
@@ -191,11 +192,13 @@ fn (mut c Checker) comptime_call(mut node ast.ComptimeCall) ast.Type {
 	} else {
 		c.error('todo: not a string literal', node.method_pos)
 	}
-	left_sym := c.table.sym(c.unwrap_generic(node.left_type))
+	left_type := c.unwrap_generic(node.left_type)
+	left_sym := c.table.sym(left_type)
 	f := left_sym.find_method(method_name) or {
 		c.error('could not find method `${method_name}`', node.method_pos)
 		return ast.void_type
 	}
+	c.markused_comptime_call(true, '${int(left_type)}.${method_name}')
 	node.result_type = f.return_type
 	return f.return_type
 }
@@ -210,17 +213,24 @@ fn (mut c Checker) comptime_selector(mut node ast.ComptimeSelector) ast.Type {
 	}
 	if mut node.field_expr is ast.SelectorExpr {
 		left_pos := node.field_expr.expr.pos()
-		if c.comptime.type_map.len == 0 {
+		if c.type_resolver.type_map.len == 0 {
 			c.error('compile time field access can only be used when iterating over `T.fields`',
 				left_pos)
 		}
-		expr_type = c.comptime.get_comptime_selector_type(node, ast.void_type)
+		node.is_name = node.field_expr.field_name == 'name'
+		if mut node.field_expr.expr is ast.Ident {
+			node.typ_key = '${node.field_expr.expr.name}.typ'
+		}
+		expr_type = c.type_resolver.get_comptime_selector_type(node, ast.void_type)
 		if expr_type != ast.void_type {
+			if node.or_block.kind == .propagate_option {
+				return expr_type.clear_flag(.option)
+			}
 			return expr_type
 		}
 		expr_name := node.field_expr.expr.str()
-		if expr_name in c.comptime.type_map {
-			return c.comptime.type_map[expr_name]
+		if expr_name in c.type_resolver.type_map {
+			return c.type_resolver.get_ct_type_or_default(expr_name, ast.void_type)
 		}
 		c.error('unknown `\$for` variable `${expr_name}`', left_pos)
 	} else {
@@ -261,22 +271,27 @@ fn (mut c Checker) comptime_for(mut node ast.ComptimeFor) {
 					return
 				}
 			}
+			has_different_types := fields.len > 1
+				&& !fields.all(c.check_basic(it.typ, fields[0].typ))
 			for field in fields {
 				c.push_new_comptime_info()
 				c.comptime.inside_comptime_for = true
+				c.table.used_features.comptime_for = true
 				if c.field_data_type == 0 {
 					c.field_data_type = c.table.find_type('FieldData')
 				}
 				c.comptime.comptime_for_field_value = field
 				c.comptime.comptime_for_field_var = node.val_var
-				c.comptime.type_map[node.val_var] = c.field_data_type
-				c.comptime.type_map['${node.val_var}.typ'] = node.typ
+				c.type_resolver.update_ct_type(node.val_var, c.field_data_type)
+				c.type_resolver.update_ct_type('${node.val_var}.typ', node.typ)
 				c.comptime.comptime_for_field_type = field.typ
+				c.comptime.has_different_types = has_different_types
 				c.stmts(mut node.stmts)
 
 				unwrapped_expr_type := c.unwrap_generic(field.typ)
 				tsym := c.table.sym(unwrapped_expr_type)
 				c.table.dumps[int(unwrapped_expr_type.clear_flags(.option, .result, .atomic_f))] = tsym.cname
+				c.markused_comptimefor(mut node, unwrapped_expr_type)
 				if tsym.kind == .array_fixed {
 					info := tsym.info as ast.ArrayFixed
 					if !info.is_fn_ret {
@@ -301,10 +316,11 @@ fn (mut c Checker) comptime_for(mut node ast.ComptimeFor) {
 				c.enum_data_type = c.table.find_type('EnumData')
 			}
 			c.comptime.comptime_for_enum_var = node.val_var
-			c.comptime.type_map[node.val_var] = c.enum_data_type
-			c.comptime.type_map['${node.val_var}.typ'] = node.typ
+			c.type_resolver.update_ct_type(node.val_var, c.enum_data_type)
+			c.type_resolver.update_ct_type('${node.val_var}.typ', node.typ)
 			c.stmts(mut node.stmts)
 			c.pop_comptime_info()
+			c.table.used_features.comptime_for = true
 		} else {
 			c.error('iterating over .values is supported only for enums, and ${sym.name} is not an enum',
 				node.typ_pos)
@@ -318,10 +334,11 @@ fn (mut c Checker) comptime_for(mut node ast.ComptimeFor) {
 			c.comptime.comptime_for_method = unsafe { &method }
 			c.comptime.comptime_for_method_var = node.val_var
 			c.comptime.comptime_for_method_ret_type = method.return_type
-			c.comptime.type_map['${node.val_var}.return_type'] = method.return_type
+			c.type_resolver.update_ct_type('${node.val_var}.return_type', method.return_type)
 			c.stmts(mut node.stmts)
 			c.pop_comptime_info()
 		}
+		c.table.used_features.comptime_for = true
 	} else if node.kind == .params {
 		if !(sym.kind == .function || sym.name == 'FunctionData') {
 			c.error('iterating over `.params` is supported only for functions, and `${sym.name}` is not a function',
@@ -352,8 +369,8 @@ fn (mut c Checker) comptime_for(mut node ast.ComptimeFor) {
 			c.push_new_comptime_info()
 			c.comptime.inside_comptime_for = true
 			c.comptime.comptime_for_variant_var = node.val_var
-			c.comptime.type_map[node.val_var] = c.variant_data_type
-			c.comptime.type_map['${node.val_var}.typ'] = variant
+			c.type_resolver.update_ct_type(node.val_var, c.variant_data_type)
+			c.type_resolver.update_ct_type('${node.val_var}.typ', variant)
 			c.stmts(mut node.stmts)
 			c.pop_comptime_info()
 		}
@@ -624,7 +641,7 @@ fn (mut c Checker) verify_all_vweb_routes() {
 	if c.vweb_gen_types.len == 0 {
 		return
 	}
-	c.table.used_veb_types = c.vweb_gen_types
+	c.table.used_features.used_veb_types = c.vweb_gen_types
 	typ_vweb_result := c.table.find_type('vweb.Result')
 	old_file := c.file
 	for vgt in c.vweb_gen_types {
@@ -657,7 +674,7 @@ fn (mut c Checker) evaluate_once_comptime_if_attribute(mut node ast.Attr) bool {
 	if mut node.ct_expr is ast.Ident {
 		if node.ct_opt {
 			if node.ct_expr.name in ast.valid_comptime_not_user_defined {
-				c.error('option `[if expression ?]` tags, can be used only for user defined identifiers',
+				c.error('option `@[if expression ?]` tags, can be used only for user defined identifiers',
 					node.pos)
 				node.ct_skip = true
 			} else {
@@ -667,7 +684,7 @@ fn (mut c Checker) evaluate_once_comptime_if_attribute(mut node ast.Attr) bool {
 			return node.ct_skip
 		} else {
 			if node.ct_expr.name !in ast.valid_comptime_not_user_defined {
-				c.note('`[if ${node.ct_expr.name}]` is deprecated. Use `@[if ${node.ct_expr.name} ?]` instead',
+				c.note('`@[if ${node.ct_expr.name}]` is deprecated. Use `@[if ${node.ct_expr.name} ?]` instead',
 					node.pos)
 				node.ct_skip = node.ct_expr.name !in c.pref.compile_defines
 				node.ct_evaled = true
@@ -742,7 +759,15 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 				should_record_ident = true
 				is_user_ident = true
 				ident_name = cond.expr.name
-				return if cond.expr.name in c.pref.compile_defines_all { .eval } else { .skip }
+				return if cond.expr.name in c.pref.compile_defines {
+					.eval
+				} else {
+					if cond.expr.name in c.pref.compile_defines_all {
+						ComptimeBranchSkipState.unknown
+					} else {
+						ComptimeBranchSkipState.skip
+					}
+				}
 			} else {
 				c.error('invalid `\$if` condition', cond.pos)
 			}
@@ -779,7 +804,7 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 					} else if cond.left is ast.TypeNode && mut cond.right is ast.ComptimeType {
 						left := cond.left as ast.TypeNode
 						checked_type := c.unwrap_generic(left.typ)
-						return if c.comptime.is_comptime_type(checked_type, cond.right) {
+						return if c.type_resolver.is_comptime_type(checked_type, cond.right) {
 							.eval
 						} else {
 							.skip
@@ -787,11 +812,14 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 					} else if cond.left in [ast.Ident, ast.SelectorExpr, ast.TypeNode] {
 						// `$if method.type is string`
 						c.expr(mut cond.left)
+						c.comptime.inside_comptime_if = true
 						if mut cond.left is ast.SelectorExpr && cond.right is ast.ComptimeType {
 							comptime_type := cond.right as ast.ComptimeType
 							if c.comptime.is_comptime_selector_type(cond.left) {
-								checked_type := c.comptime.get_type(cond.left)
-								return if c.comptime.is_comptime_type(checked_type, comptime_type) {
+								checked_type := c.type_resolver.get_type(cond.left)
+								return if c.type_resolver.is_comptime_type(checked_type,
+									comptime_type)
+								{
 									.eval
 								} else {
 									.skip
@@ -800,7 +828,7 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 								&& cond.left.name_type != 0 {
 								// T.unaliased_typ
 								checked_type := c.unwrap_generic(cond.left.name_type)
-								return if c.comptime.is_comptime_type(c.table.unaliased_type(checked_type),
+								return if c.type_resolver.is_comptime_type(c.table.unaliased_type(checked_type),
 									comptime_type)
 								{
 									.eval
@@ -1031,7 +1059,7 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 		ast.SelectorExpr {
 			if c.comptime.check_comptime_is_field_selector(cond) {
 				if c.comptime.check_comptime_is_field_selector_bool(cond) {
-					ret_bool := c.comptime.get_comptime_selector_bool_field(cond.field_name)
+					ret_bool := c.type_resolver.get_comptime_selector_bool_field(cond.field_name)
 					return if ret_bool { .eval } else { .skip }
 				}
 				c.error('unknown field `${cond.field_name}` from ${c.comptime.comptime_for_field_var}',
@@ -1048,11 +1076,11 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 
 // push_new_comptime_info saves the current comptime information
 fn (mut c Checker) push_new_comptime_info() {
-	c.comptime_info_stack << comptime.ComptimeInfo{
-		resolver:                     c.comptime.resolver
-		table:                        c.comptime.table
-		type_map:                     c.comptime.type_map.clone()
+	c.type_resolver.info_stack << type_resolver.ResolverInfo{
+		saved_type_map:               c.type_resolver.type_map.clone()
 		inside_comptime_for:          c.comptime.inside_comptime_for
+		inside_comptime_if:           c.comptime.inside_comptime_if
+		has_different_types:          c.comptime.has_different_types
 		comptime_for_variant_var:     c.comptime.comptime_for_variant_var
 		comptime_for_field_var:       c.comptime.comptime_for_field_var
 		comptime_for_field_type:      c.comptime.comptime_for_field_type
@@ -1066,11 +1094,11 @@ fn (mut c Checker) push_new_comptime_info() {
 
 // pop_comptime_info pops the current comptime information frame
 fn (mut c Checker) pop_comptime_info() {
-	old := c.comptime_info_stack.pop()
-	c.comptime.resolver = old.resolver
-	c.comptime.table = old.table
-	c.comptime.type_map = old.type_map.clone()
+	old := c.type_resolver.info_stack.pop()
+	c.type_resolver.type_map = old.saved_type_map.clone()
 	c.comptime.inside_comptime_for = old.inside_comptime_for
+	c.comptime.inside_comptime_if = old.inside_comptime_if
+	c.comptime.has_different_types = old.has_different_types
 	c.comptime.comptime_for_variant_var = old.comptime_for_variant_var
 	c.comptime.comptime_for_field_var = old.comptime_for_field_var
 	c.comptime.comptime_for_field_type = old.comptime_for_field_type

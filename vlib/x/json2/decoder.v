@@ -60,14 +60,11 @@ fn new_parser(srce string, convert_type bool) Parser {
 
 // decode is a generic function that decodes a JSON string into the target type.
 pub fn decode[T](src string) !T {
+	$if T is Any {
+		return raw_decode(src)!
+	}
 	res := raw_decode(src)!.as_map()
 	return decode_struct[T](T{}, res)
-}
-
-// decode_array is a generic function that decodes a JSON string into the array target type.
-pub fn decode_array[T](src string) ![]T {
-	res := raw_decode(src)!.as_map()
-	return decode_struct_array(T{}, res)
 }
 
 // decode_struct_array is a generic function that decodes a JSON map into array struct T.
@@ -262,7 +259,7 @@ fn decode_array_item[T](mut field T, arr []Any) {
 		typeof[[]time.Time]().idx { field = arr.map(it.to_time() or { time.Time{} }) }
 		typeof[[]?time.Time]().idx { field = arr.map(?time.Time(it.to_time() or { time.Time{} })) }
 		typeof[[]Any]().idx { field = arr.clone() }
-		typeof[[]?Any]().idx { field = arr.map(?Any(it)) }
+		typeof[[]?Any]().idx { field = arr.map(it) }
 		typeof[[]u8]().idx   { field = arr.map(it.u64()) }
 		typeof[[]?u8]().idx  { field = arr.map(?u8(it.u64())) }
 		typeof[[]u16]().idx  { field = arr.map(it.u64()) }
@@ -294,8 +291,8 @@ fn decode_array_item[T](mut field T, arr []Any) {
 			$else $if T is [][]?u64 { field << arr.map(it.as_map().values().map(?u64(it.u64()))) }
 			$else $if T is [][]bool { field << arr.map(it.as_map().values().map(it.bool())) }
 			$else $if T is [][]?bool  { field << arr.map(it.as_map().values().map(?bool(it.bool()))) }
-			$else $if T is [][]string  { field << arr.map(it.as_map().values().map(it.string())) }
-			$else $if T is [][]?string { field << arr.map(it.as_map().values().map(?string(it.string()))) }
+			$else $if T is [][]string  { field << arr.map(it.as_map().values().map(it.str())) }
+			$else $if T is [][]?string { field << arr.map(it.as_map().values().map(?string(it.str()))) }
 		}
 	}
 	// vfmt on
@@ -428,6 +425,7 @@ fn (mut p Parser) decode_array() !Any {
 	return Any(items)
 }
 
+@[deprecated_after: '2025-03-18']
 fn (mut p Parser) decode_object() !Any {
 	mut fields := map[string]Any{}
 	p.next_with_err()!

@@ -12,7 +12,6 @@ pub const default_boolean_tag = Tag{.universal, false, int(TagType.boolean)}
 // ASN.1 DER encoding restricts encoding of boolean true value into 0xff
 // and otherwise, encodes into zero (0x00) for false value.
 // The encoding of a boolean value shall be primitive. The contents octets shall consist of a single octet.
-@[noinit]
 pub struct Boolean {
 mut:
 	// boolean value represented in single  byte to allow stores multiple value represents
@@ -63,12 +62,8 @@ fn (b Boolean) payload_with_rule(rule EncodingRule) ![]u8 {
 	return [b.value]
 }
 
-fn parse_boolean(mut p Parser) !Boolean {
-	return Boolean.parse(mut p)!
-}
-
 // parse tries to read a Boolean type from parser or return error on fails
-fn Boolean.parse(mut p Parser) !Boolean {
+pub fn Boolean.parse(mut p Parser) !Boolean {
 	tag := p.read_tag()!
 	if !tag.equal(default_boolean_tag) {
 		return error('Get unexpected non boolean tag')

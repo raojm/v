@@ -21,7 +21,6 @@ fn C.pthread_mutex_unlock(voidptr) int
 fn C.pthread_mutex_destroy(voidptr) int
 fn C.pthread_rwlockattr_init(voidptr) int
 fn C.pthread_rwlockattr_setkind_np(voidptr, int) int
-fn C.pthread_rwlockattr_setpshared(voidptr, int) int
 fn C.pthread_rwlockattr_destroy(voidptr) int
 fn C.pthread_rwlock_init(voidptr, voidptr) int
 fn C.pthread_rwlock_rdlock(voidptr) int
@@ -95,7 +94,6 @@ pub fn (mut m RwMutex) init() {
 	C.pthread_rwlockattr_init(&a.attr)
 	// Give writer priority over readers
 	C.pthread_rwlockattr_setkind_np(&a.attr, C.PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP)
-	C.pthread_rwlockattr_setpshared(&a.attr, C.PTHREAD_PROCESS_PRIVATE)
 	C.pthread_rwlock_init(&m.mutex, &a.attr)
 	C.pthread_rwlockattr_destroy(&a.attr) // destroy the attr when done
 }
@@ -124,10 +122,7 @@ pub fn (mut m Mutex) unlock() {
 // destroy frees the resources associated with the mutex instance.
 // Note: the mutex itself is not freed.
 pub fn (mut m Mutex) destroy() {
-	res := C.pthread_mutex_destroy(&m.mutex)
-	if res != 0 {
-		cpanic(res)
-	}
+	should_be_zero(C.pthread_mutex_destroy(&m.mutex))
 }
 
 // rlock locks the given RwMutex instance for reading.
@@ -169,10 +164,7 @@ pub fn (mut m RwMutex) try_wlock() bool {
 // destroy frees the resources associated with the rwmutex instance.
 // Note: the mutex itself is not freed.
 pub fn (mut m RwMutex) destroy() {
-	res := C.pthread_rwlock_destroy(&m.mutex)
-	if res != 0 {
-		cpanic(res)
-	}
+	should_be_zero(C.pthread_rwlock_destroy(&m.mutex))
 }
 
 // runlock unlocks the RwMutex instance, locked for reading.
@@ -305,8 +297,5 @@ pub fn (mut sem Semaphore) timed_wait(timeout time.Duration) bool {
 // destroy frees the resources associated with the Semaphore instance.
 // Note: the semaphore instance itself is not freed.
 pub fn (mut sem Semaphore) destroy() {
-	res := C.sem_destroy(&sem.sem)
-	if res != 0 {
-		cpanic(res)
-	}
+	should_be_zero(C.sem_destroy(&sem.sem))
 }

@@ -126,13 +126,26 @@ pub:
 // If you want a negative integer, use in the following manner:
 // `value := big.integer_from_bytes(bytes, signum: -1)`
 @[direct_array_access]
-pub fn integer_from_bytes(input []u8, config IntegerConfig) Integer {
+pub fn integer_from_bytes(oinput []u8, config IntegerConfig) Integer {
 	// Thank you to Miccah (@mcastorina) for this implementation and relevant unit tests.
-	if input.len == 0 {
+	if oinput.len == 0 {
 		return integer_from_int(0)
 	}
+	// Ignore leading 0 bytes:
+	mut first_non_zero_index := -1
+	for i in 0 .. oinput.len {
+		if oinput[i] != 0 {
+			first_non_zero_index = i
+			break
+		}
+	}
+	if first_non_zero_index == -1 {
+		return integer_from_int(0)
+	}
+	input := oinput[first_non_zero_index..]
 	// pad input
-	mut padded_input := []u8{len: ((input.len + 3) & ~0x3) - input.len, cap: (input.len + 3) & ~0x3}
+	mut padded_input := []u8{len: int_max(0, ((input.len + 3) & ~0x3) - input.len), cap: (
+		input.len + 3) & ~0x3}
 	padded_input << input
 	mut digits := []u32{len: padded_input.len / 4}
 	// combine every 4 bytes into a u32 and insert into n.digits
@@ -162,7 +175,7 @@ pub fn integer_from_radix(all_characters string, radix u32) !Integer {
 		return error('math.big: Radix must be between 2 and 36 (inclusive)')
 	}
 	characters := all_characters.to_lower()
-	validate_string(characters, radix)!
+	validate_string(characters, radix) or { return err }
 	return match radix {
 		2 {
 			integer_from_special_string(characters, 1)
@@ -409,7 +422,7 @@ fn (dividend Integer) div_mod_internal(divisor Integer) (Integer, Integer) {
 		}
 	}
 	// Division for positive integers
-	mut q := []u32{cap: dividend.digits.len - divisor.digits.len + 1}
+	mut q := []u32{cap: int_max(1, dividend.digits.len - divisor.digits.len + 1)}
 	mut r := []u32{cap: dividend.digits.len}
 	divide_digit_array(dividend.digits, divisor.digits, mut q, mut r)
 	quotient := Integer{
@@ -742,12 +755,6 @@ pub fn (a Integer) bitwise_xor(b Integer) Integer {
 	}
 }
 
-// lshift returns the integer `a` shifted left by `amount` bits.
-@[deprecated: 'use a.Integer.left_shift(amount) instead']
-pub fn (a Integer) lshift(amount u32) Integer {
-	return a.left_shift(amount)
-}
-
 // left_shift returns the integer `a` shifted left by `amount` bits.
 @[direct_array_access]
 pub fn (a Integer) left_shift(amount u32) Integer {
@@ -770,12 +777,6 @@ pub fn (a Integer) left_shift(amount u32) Integer {
 		digits: new_array
 		signum: a.signum
 	}
-}
-
-// rshift returns the integer `a` shifted right by `amount` bits.
-@[deprecated: 'use a.Integer.right_shift(amount) instead']
-pub fn (a Integer) rshift(amount u32) Integer {
-	return a.right_shift(amount)
 }
 
 // right_shift returns the integer `a` shifted right by `amount` bits.
@@ -803,12 +804,6 @@ pub fn (a Integer) right_shift(amount u32) Integer {
 		digits: new_array
 		signum: a.signum
 	}
-}
-
-// binary_str returns the binary string representation of the integer `a`.
-@[deprecated: 'use integer.bin_str() instead']
-pub fn (integer Integer) binary_str() string {
-	return integer.bin_str()
 }
 
 // bin_str returns the binary string representation of the integer `a`.

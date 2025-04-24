@@ -1,3 +1,4 @@
+// vtest build: present_sqlite3?
 import db.sqlite
 
 type Connection = sqlite.DB
@@ -11,7 +12,7 @@ pub:
 type Content = []u8 | string
 
 struct Host {
-pub:
+pub mut:
 	db Connection
 }
 
@@ -92,7 +93,8 @@ fn test_can_access_sqlite_result_consts() {
 }
 
 fn test_alias_db() {
-	create_host(sqlite.connect(':memory:')!)!
+	mut host := create_host(sqlite.connect(':memory:')!)!
+	host.db.close()!
 	assert true
 }
 
@@ -110,7 +112,9 @@ fn test_exec_param_many() {
 		'Sam',
 	]) or {
 		assert err.code() == 19 // constraint failure
+		db.close()!
 		return
 	}
+	db.close()!
 	assert false
 }

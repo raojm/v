@@ -59,11 +59,6 @@ pub fn (mut b Builder) write_runes(runes []rune) {
 	}
 }
 
-// clear clears the buffer contents
-pub fn (mut b Builder) clear() {
-	b = []u8{cap: b.cap}
-}
-
 // write_u8 appends a single `data` byte to the accumulated buffer
 @[inline]
 pub fn (mut b Builder) write_u8(data u8) {
@@ -152,14 +147,6 @@ pub fn (mut b Builder) write_string2(s1 string, s2 string) {
 	if s2.len != 0 {
 		unsafe { b.push_many(s2.str, s2.len) }
 	}
-}
-
-// writeln_string appends the string `s`+`\n` to the buffer
-@[deprecated: 'use writeln() instead']
-@[deprecated_after: '2024-03-21']
-@[inline]
-pub fn (mut b Builder) writeln_string(s string) {
-	b.writeln(s)
 }
 
 // go_back discards the last `n` bytes from the buffer
@@ -254,7 +241,7 @@ pub fn (mut b Builder) str() string {
 	b << u8(0)
 	bcopy := unsafe { &u8(memdup_noscan(b.data, b.len)) }
 	s := unsafe { bcopy.vstring_with_len(b.len - 1) }
-	b.trim(0)
+	b.clear()
 	return s
 }
 

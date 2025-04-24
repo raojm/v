@@ -36,8 +36,7 @@ fn (mut c Checker) sql_expr(mut node ast.SqlExpr) ast.Type {
 	}
 
 	info := table_sym.info as ast.Struct
-	mut fields := c.fetch_and_check_orm_fields(info, node.table_expr.pos, table_sym.name,
-		node)
+	mut fields := c.fetch_and_check_orm_fields(info, node.table_expr.pos, table_sym.name)
 	non_primitive_fields := c.get_orm_non_primitive_fields(fields)
 	mut sub_structs := map[int]ast.SqlExpr{}
 
@@ -254,7 +253,8 @@ fn (mut c Checker) sql_stmt_line(mut node ast.SqlStmtLine) ast.Type {
 			inserting_object_type = inserting_object.typ.deref()
 		}
 
-		if inserting_object_type != node.table_expr.typ {
+		if inserting_object_type != node.table_expr.typ
+			&& !c.table.sumtype_has_variant(inserting_object_type, node.table_expr.typ, false) {
 			table_name := table_sym.name
 			inserting_type_name := c.table.sym(inserting_object_type).name
 
@@ -269,8 +269,7 @@ fn (mut c Checker) sql_stmt_line(mut node ast.SqlStmtLine) ast.Type {
 	}
 
 	info := table_sym.info as ast.Struct
-	mut fields := c.fetch_and_check_orm_fields(info, node.table_expr.pos, table_sym.name,
-		ast.SqlExpr{})
+	mut fields := c.fetch_and_check_orm_fields(info, node.table_expr.pos, table_sym.name)
 
 	for field in fields {
 		c.check_orm_struct_field_attrs(node, field)
@@ -397,7 +396,7 @@ fn (mut c Checker) check_orm_non_primitive_struct_field_attrs(field ast.StructFi
 	}
 }
 
-fn (mut c Checker) fetch_and_check_orm_fields(info ast.Struct, pos token.Pos, table_name string, sql_expr ast.SqlExpr) []ast.StructField {
+fn (mut c Checker) fetch_and_check_orm_fields(info ast.Struct, pos token.Pos, table_name string) []ast.StructField {
 	if cache := c.orm_table_fields[table_name] {
 		return cache
 	}
@@ -407,7 +406,9 @@ fn (mut c Checker) fetch_and_check_orm_fields(info ast.Struct, pos token.Pos, ta
 			continue
 		}
 		field_sym := c.table.sym(field.typ)
-		is_primitive := field.typ.is_string() || field.typ.is_bool() || field.typ.is_number()
+		final_field_typ := c.table.final_type(field.typ)
+		is_primitive := final_field_typ.is_string() || final_field_typ.is_bool()
+			|| final_field_typ.is_number()
 		is_struct := field_sym.kind == .struct
 		is_array := field_sym.kind == .array
 		is_enum := field_sym.kind == .enum
@@ -724,27 +725,6 @@ fn (_ &Checker) check_field_of_inserting_struct_is_uninitialized(node &ast.SqlSt
 	}
 
 	return false
-}
-
-fn (c &Checker) orm_get_field_pos(expr &ast.Expr) token.Pos {
-	mut pos := token.Pos{}
-	if expr is ast.InfixExpr {
-		if expr.left is ast.Ident {
-			pos = expr.left.pos
-		} else if expr.left is ast.InfixExpr || expr.left is ast.ParExpr
-			|| expr.left is ast.PrefixExpr {
-			pos = c.orm_get_field_pos(expr.left)
-		} else {
-			pos = expr.left.pos()
-		}
-	} else if expr is ast.ParExpr {
-		pos = c.orm_get_field_pos(expr.expr)
-	} else if expr is ast.PrefixExpr {
-		pos = c.orm_get_field_pos(expr.right)
-	} else {
-		pos = expr.pos()
-	}
-	return pos
 }
 
 // check_recursive_structs returns true if type is struct and has any child or nested child with the type of the given struct name,

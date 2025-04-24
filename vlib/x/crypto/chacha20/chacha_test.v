@@ -1,25 +1,88 @@
 module chacha20
 
-import crypto.cipher
 import rand
 import encoding.hex
 
-struct StreamCipher {
-mut:
-	cipher &cipher.Stream
+const encoded_data = [
+	[u8(231), 121, 9, 28],
+	[u8(178), 221, 62, 9, 153, 189, 106, 12, 117, 47, 192, 81, 65, 112, 85, 57],
+	[u8(155), 202, 56, 16],
+	[u8(227), 47, 226, 137],
+	[u8(162), 77, 218, 52],
+	[u8(42), 250, 184, 196],
+	[u8(2), 129, 13, 136, 6, 12, 235, 183, 38, 178, 151, 243, 27, 88, 97, 40],
+	[u8(248), 170, 168, 206],
+	[u8(181), 220, 223, 139],
+	[u8(95), 108, 201, 227],
+	[u8(38), 221, 147, 230],
+	[u8(98), 229, 5, 130, 13, 103, 248, 159, 240, 246, 56, 119, 160, 130, 82, 222],
+	// additional data
+	'hello hello hello'.bytes(),
+	'me me me'.bytes(),
+]
+
+// expected data obtained with an equivalent Java program
+const expected_data = [
+	[u8(0), 0, 0, 9],
+	[u8(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+	[u8(0), 0, 0, 1],
+	[u8(0), 0, 0, 0],
+	[u8(0), 0, 0, 0],
+	[u8(0), 0, 0, 9],
+	[u8(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+	[u8(0), 0, 0, 1],
+	[u8(0), 0, 0, 0],
+	[u8(0), 0, 0, 0],
+	[u8(0), 0, 0, 9],
+	[u8(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+	// golang script produces this
+	[u8(119), 69, 96, 134, 100, 241, 107, 39, 71, 72, 65, 158, 50, 76, 187, 68, 100],
+	[u8(164), 169, 216, 98, 61, 175, 20, 175],
+]
+
+// See https://github.com/vlang/v/issues/24043
+fn test_for_more_consecutive_xor_key_stream() {
+	key := [u8(225), 2, 1, 178, 238, 127, 187, 188, 27, 237, 18, 62, 181, 65, 67, 152, 13, 247,
+		147, 148, 101, 220, 185, 120, 234, 58, 144, 173, 3, 218, 193, 130]
+	nonce := [u8(153), 221, 244, 134, 99, 135, 243, 247, 169, 121, 69, 54]
+
+	mut cipher := new_cipher(key, nonce)!
+	for i := 0; i < encoded_data.len; i++ {
+		p := encoded_data[i]
+		e := expected_data[i]
+		mut dst := []u8{len: p.len}
+		cipher.xor_key_stream(mut dst, p)
+		assert dst == e
+	}
 }
 
-// Verify chahca20.Cipher implements chiper.Stream correctly.
-fn test_chacha20_stream_cipher() ! {
-	mut key := []u8{len: 32}
-	mut nonce := []u8{len: 12}
-	rand.read(mut key)
-	rand.read(mut nonce)
+fn test_xor_key_stream_consecutive() {
+	// See https://github.com/vlang/v/issues/23977
+	key := [u8(64), 116, 63, 11, 221, 199, 187, 110, 217, 68, 0, 50, 65, 79, 24, 10, 124, 174,
+		66, 2, 172, 153, 237, 145, 244, 41, 131, 84, 247, 42, 73, 131]
+	nonce := [u8(86), 124, 222, 94, 253, 187, 151, 219, 17, 83, 118, 255]
+	encoded_data_one := [u8(201), 199, 66, 226]
+	decoded_data_one := [u8(0), 0, 0, 9]
+	encoded_data_two := [u8(82), 189, 125, 3, 24, 185, 183, 240, 29, 223, 17, 241, 103, 69, 45,
+		101]
+	decoded_data_two := [u8(0), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 	mut c := new_cipher(key, nonce)!
-	s := StreamCipher{
-		cipher: c
-	}
+	mut dst := []u8{len: encoded_data_one.len}
+	c.xor_key_stream(mut dst, encoded_data_one)
+	assert dst == decoded_data_one
+
+	// consecutive call
+	dst = []u8{len: encoded_data_two.len}
+	c.xor_key_stream(mut dst, encoded_data_two)
+	assert dst == decoded_data_two
+
+	// additional data
+	msg := 'billy the kid'.bytes()
+	mut dst2 := []u8{len: msg.len}
+	c.xor_key_stream(mut dst2, msg)
+	// the go version produces: [40 17 78 116 255 224 2 52 92 151 103 107 138]
+	assert dst2 == [u8(40), 17, 78, 116, 255, 224, 2, 52, 92, 151, 103, 107, 138]
 }
 
 fn test_chacha20_cipher_reset() ! {
@@ -72,10 +135,11 @@ fn test_chacha20_block_function() ! {
 		nonce_bytes := hex.decode(val.nonce)!
 		mut cs := new_cipher(key_bytes, nonce_bytes)!
 		cs.set_counter(val.counter)
-		cs.chacha20_block()
+		mut block := []u8{len: block_size}
+		cs.chacha20_block_generic(mut block, block)
 		exp_bytes := hex.decode(val.output)!
 
-		assert cs.block == exp_bytes
+		assert block == exp_bytes
 	}
 }
 
@@ -89,12 +153,12 @@ fn test_chacha20_simple_block_function() ! {
 	mut block := []u8{len: block_size}
 	mut cs := new_cipher(key_bytes, nonce_bytes)!
 	cs.set_counter(u32(1))
-	cs.chacha20_block()
+	cs.chacha20_block_generic(mut block, block)
 
 	expected_raw_bytes := '10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4ed2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e'
 	exp_bytes := hex.decode(expected_raw_bytes)!
 
-	assert cs.block == exp_bytes
+	assert block == exp_bytes
 }
 
 fn test_chacha20_quarter_round() {

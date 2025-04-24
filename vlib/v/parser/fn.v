@@ -141,7 +141,7 @@ fn (mut p Parser) call_args() []ast.CallArg {
 			array_decompose = true
 		}
 		mut expr := ast.empty_expr
-		if p.tok.kind == .name && p.peek_tok.kind == .colon {
+		if p.tok.kind in [.name, .key_type] && p.peek_tok.kind == .colon {
 			// `foo(key:val, key2:val2)`
 			expr = p.struct_init('void_type', .short_syntax, false)
 		} else {
@@ -194,6 +194,7 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 	mut is_keep_alive := false
 	mut is_exported := false
 	mut is_unsafe := false
+	mut is_must_use := false
 	mut is_trusted := false
 	mut is_noreturn := false
 	mut is_ctor_new := false
@@ -202,7 +203,9 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 	mut is_markused := false
 	mut is_expand_simple_interpolation := false
 	mut comments := []ast.Comment{}
-	for fna in p.attrs {
+	fn_attrs := p.attrs
+	p.attrs = []
+	for fna in fn_attrs {
 		match fna.name {
 			'noreturn' {
 				is_noreturn = true
@@ -227,6 +230,9 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 			}
 			'unsafe' {
 				is_unsafe = true
+			}
+			'must_use' {
+				is_must_use = true
 			}
 			'trusted' {
 				is_trusted = true
@@ -267,7 +273,7 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 			else {}
 		}
 	}
-	conditional_ctdefine_idx := p.attrs.find_comptime_define() or { -1 }
+	conditional_ctdefine_idx := fn_attrs.find_comptime_define() or { -1 }
 	is_pub := p.tok.kind == .key_pub
 	if is_pub {
 		p.next()
@@ -282,7 +288,7 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 	mut language := p.parse_language()
 	p.fn_language = language
 	if language != .v {
-		for fna in p.attrs {
+		for fna in fn_attrs {
 			if fna.name == 'export' {
 				p.error_with_pos('interop function cannot be exported', fna.pos)
 				break
@@ -442,33 +448,6 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 		is_variadic = true
 	}
 	params << params_t
-	if !are_params_type_only {
-		for k, param in params {
-			if p.scope.known_var(param.name) {
-				p.error_with_pos('redefinition of parameter `${param.name}`', param.pos)
-				return ast.FnDecl{
-					scope: unsafe { nil }
-				}
-			}
-			is_stack_obj := !param.typ.has_flag(.shared_f) && (param.is_mut || param.typ.is_ptr())
-			p.scope.register(ast.Var{
-				name:          param.name
-				typ:           param.typ
-				is_mut:        param.is_mut
-				is_auto_deref: param.is_mut
-				is_stack_obj:  is_stack_obj
-				pos:           param.pos
-				is_used:       true
-				is_arg:        true
-				ct_type_var:   if (!is_method || k > 0) && param.typ.has_flag(.generic)
-					&& !param.typ.has_flag(.variadic) {
-					.generic_param
-				} else {
-					.no_comptime
-				}
-			})
-		}
-	}
 	// Return type
 	mut return_type_pos := p.tok.pos()
 	mut return_type := ast.void_type
@@ -498,6 +477,9 @@ fn (mut p Parser) fn_decl() ast.FnDecl {
 	end_pos := p.prev_tok.pos()
 	short_fn_name := name
 	is_main := short_fn_name == 'main' && p.mod == 'main'
+	if is_main {
+		p.main_already_defined = true
+	}
 	is_test := (!is_method && params.len == 0) && p.inside_test_file
 		&& (short_fn_name.starts_with('test_') || short_fn_name.starts_with('testsuite_'))
 	file_mode := p.file_backend_mode
@@ -515,6 +497,33 @@ run them via `v file.v` instead',
 		p.error_with_pos('cannot declare a static function as a receiver method', name_pos)
 	}
 	// Register
+	if !are_params_type_only {
+		for k, param in params {
+			if p.scope.known_var(param.name) {
+				p.error_with_pos('redefinition of parameter `${param.name}`', param.pos)
+				return ast.FnDecl{
+					scope: unsafe { nil }
+				}
+			}
+			is_stack_obj := !param.typ.has_flag(.shared_f) && (param.is_mut || param.typ.is_ptr())
+			p.scope.register(ast.Var{
+				name:          param.name
+				typ:           param.typ
+				is_mut:        param.is_mut
+				is_auto_deref: param.is_mut
+				is_stack_obj:  is_stack_obj
+				pos:           param.pos
+				is_used:       is_pub || no_body || (is_method && k == 0) || p.builtin_mod
+				is_arg:        true
+				ct_type_var:   if (!is_method || k >= 0) && param.typ.has_flag(.generic)
+					&& !param.typ.has_flag(.variadic) {
+					.generic_param
+				} else {
+					.no_comptime
+				}
+			})
+		}
+	}
 	if is_method {
 		// Do not allow to modify / add methods to types from other modules
 		// arrays/maps dont belong to a module only their element types do
@@ -544,13 +553,14 @@ run them via `v file.v` instead',
 			is_deprecated: is_deprecated
 			is_noreturn:   is_noreturn
 			is_unsafe:     is_unsafe
+			is_must_use:   is_must_use
 			is_main:       is_main
 			is_test:       is_test
 			is_keep_alive: is_keep_alive
 			is_method:     true
 			receiver_type: rec.typ
 			//
-			attrs:          p.attrs
+			attrs:          fn_attrs
 			is_conditional: conditional_ctdefine_idx != ast.invalid_type_idx
 			ctdefine_idx:   conditional_ctdefine_idx
 			//
@@ -597,6 +607,7 @@ run them via `v file.v` instead',
 			is_noreturn:           is_noreturn
 			is_ctor_new:           is_ctor_new
 			is_unsafe:             is_unsafe
+			is_must_use:           is_must_use
 			is_main:               is_main
 			is_test:               is_test
 			is_keep_alive:         is_keep_alive
@@ -605,7 +616,7 @@ run them via `v file.v` instead',
 			receiver_type:         if is_static_type_method { rec.typ } else { 0 } // used only if is static type method
 			is_file_translated:    p.is_translated
 			//
-			attrs:          p.attrs
+			attrs:          fn_attrs
 			is_conditional: conditional_ctdefine_idx != ast.invalid_type_idx
 			ctdefine_idx:   conditional_ctdefine_idx
 			//
@@ -676,10 +687,11 @@ run them via `v file.v` instead',
 		is_test:            is_test
 		is_keep_alive:      is_keep_alive
 		is_unsafe:          is_unsafe
+		is_must_use:        is_must_use
 		is_markused:        is_markused
 		is_file_translated: p.is_translated
 		//
-		attrs:          p.attrs
+		attrs:          fn_attrs
 		is_conditional: conditional_ctdefine_idx != ast.invalid_type_idx
 		ctdefine_idx:   conditional_ctdefine_idx
 		//
@@ -698,6 +710,7 @@ run them via `v file.v` instead',
 		language:              language
 		no_body:               no_body
 		pos:                   start_pos.extend_with_last_line(end_pos, p.prev_tok.line_nr)
+		end_pos:               p.tok.pos()
 		name_pos:              name_pos
 		body_pos:              body_start_pos
 		file:                  p.file_path
@@ -872,14 +885,21 @@ fn (mut p Parser) anon_fn() ast.AnonFn {
 	if p.tok.kind == .lcbr {
 		tmp := p.label_names
 		p.label_names = []
+		old_assign_rhs := p.inside_assign_rhs
+		p.inside_assign_rhs = false
 		stmts = p.parse_block_no_scope(false)
+		p.inside_assign_rhs = old_assign_rhs
 		label_names = p.label_names.clone()
 		p.label_names = tmp
 	}
 	p.cur_fn_name = keep_fn_name
 	func.name = name
 	idx := p.table.find_or_register_fn_type(func, true, false)
-	typ := ast.new_type(idx)
+	typ := if generic_names.len > 0 {
+		ast.new_type(idx).set_flag(.generic)
+	} else {
+		ast.new_type(idx)
+	}
 	p.inside_defer = old_inside_defer
 	// name := p.table.get_type_name(typ)
 	return ast.AnonFn{
@@ -907,6 +927,7 @@ fn (mut p Parser) anon_fn() ast.AnonFn {
 }
 
 // part of fn declaration
+// returns: params, are_params_type_only, mut is_variadic, mut is_c_variadic
 fn (mut p Parser) fn_params() ([]ast.Param, bool, bool, bool) {
 	p.check(.lpar)
 	mut params := []ast.Param{}
@@ -924,7 +945,8 @@ fn (mut p Parser) fn_params() ([]ast.Param, bool, bool, bool) {
 		|| (p.peek_tok.kind == .comma && (p.table.known_type(param_name) || is_generic_type))
 		|| p.peek_tok.kind == .dot || p.peek_tok.kind == .rpar || p.fn_language == .c
 		|| (p.tok.kind == .key_mut && (p.peek_tok.kind in [.amp, .ellipsis, .key_fn, .lsbr]
-		|| p.peek_token(2).kind == .comma || p.peek_token(2).kind == .rpar
+		|| (p.peek_token(2).kind == .comma && (p.tok.kind != .key_mut
+		|| p.peek_tok.lit[0].is_capital())) || p.peek_token(2).kind == .rpar
 		|| (p.peek_tok.kind == .name && p.peek_token(2).kind == .dot)))
 	mut prev_param_newline := p.tok.pos().line_nr
 	// TODO: copy paste, merge 2 branches
@@ -1056,8 +1078,7 @@ fn (mut p Parser) fn_params() ([]ast.Param, bool, bool, bool) {
 			// `a, b, c int`
 			for p.tok.kind == .comma {
 				if !p.pref.is_fmt {
-					p.warn(
-						'`fn f(x, y Type)` syntax has been deprecated and will soon be removed. ' +
+					p.error('`fn f(x, y Type)` syntax has been deprecated. ' +
 						'Use `fn f(x Type, y Type)` instead. You can run `v fmt -w "${p.scanner.file_path}"` to automatically fix your code.')
 				}
 				p.next()
@@ -1164,16 +1185,19 @@ fn (mut p Parser) fn_params() ([]ast.Param, bool, bool, bool) {
 fn (mut p Parser) spawn_expr() ast.SpawnExpr {
 	p.next()
 	spos := p.tok.pos()
+	old_inside_assign_rhs := p.inside_assign_rhs
+	p.inside_assign_rhs = false
 	expr := p.expr(0)
-	call_expr := if expr is ast.CallExpr {
+	p.inside_assign_rhs = old_inside_assign_rhs
+	mut call_expr := if expr is ast.CallExpr {
 		expr
 	} else {
 		p.error_with_pos('expression in `spawn` must be a function call', expr.pos())
 		ast.CallExpr{
-			scope:          p.scope
-			is_return_used: true
+			scope: p.scope
 		}
 	}
+	call_expr.is_return_used = true
 	pos := spos.extend(p.prev_tok.pos())
 	p.register_auto_import('sync.threads')
 	p.table.gostmts++
@@ -1186,16 +1210,19 @@ fn (mut p Parser) spawn_expr() ast.SpawnExpr {
 fn (mut p Parser) go_expr() ast.GoExpr {
 	p.next()
 	spos := p.tok.pos()
+	old_inside_assign_rhs := p.inside_assign_rhs
+	p.inside_assign_rhs = false
 	expr := p.expr(0)
-	call_expr := if expr is ast.CallExpr {
+	p.inside_assign_rhs = old_inside_assign_rhs
+	mut call_expr := if expr is ast.CallExpr {
 		expr
 	} else {
 		p.error_with_pos('expression in `go` must be a function call', expr.pos())
 		ast.CallExpr{
-			scope:          p.scope
-			is_return_used: true
+			scope: p.scope
 		}
 	}
+	call_expr.is_return_used = true
 	pos := spos.extend(p.prev_tok.pos())
 	// p.register_auto_import('coroutines')
 	p.table.gostmts++

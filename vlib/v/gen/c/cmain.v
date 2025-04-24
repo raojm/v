@@ -47,7 +47,7 @@ fn (mut g Gen) gen_vlines_reset() {
 	}
 }
 
-pub fn fix_reset_dbg_line(src string, out_file string) string {
+pub fn fix_reset_dbg_line(src strings.Builder, out_file string) strings.Builder {
 	util.timing_start(@FN)
 	defer {
 		util.timing_measure(@FN)
@@ -60,7 +60,7 @@ pub fn fix_reset_dbg_line(src string, out_file string) string {
 	for idx, ob in src {
 		if ob == `\n` {
 			lines++
-			if unsafe { vmemcmp(src.str + idx + 1, reset_dbg_line.str, reset_dbg_line.len) } == 0 {
+			if unsafe { vmemcmp(&u8(src.data) + idx + 1, reset_dbg_line.str, reset_dbg_line.len) } == 0 {
 				dbg_reset_line_idx = idx + 1
 				break
 			}
@@ -69,7 +69,7 @@ pub fn fix_reset_dbg_line(src string, out_file string) string {
 	// find the position of the "..\..\..\src.tmp.c":
 	mut first_quote_idx := 0
 	for idx := dbg_reset_line_idx; idx < src.len; idx++ {
-		if unsafe { src.str[idx] } == `"` {
+		if unsafe { &u8(src.data)[idx] } == `"` {
 			first_quote_idx = idx
 			break
 		}
@@ -78,15 +78,15 @@ pub fn fix_reset_dbg_line(src string, out_file string) string {
 	// before and after it unchanged:
 	mut sb := strings.new_builder(src.len)
 	unsafe {
-		sb.write_ptr(src.str, dbg_reset_line_idx)
+		sb.write_ptr(&u8(src.data), dbg_reset_line_idx)
 		sb.write_string('#line ')
 		sb.write_decimal(lines)
-		sb.write_ptr(src.str + first_quote_idx - 1, src.len - first_quote_idx)
+		sb.write_ptr(&u8(src.data) + first_quote_idx - 1, src.len - first_quote_idx)
 	}
 	$if trace_reset_dbg_line ? {
 		eprintln('> reset_dbg_line: ${out_file}:${lines} | first_quote_idx: ${first_quote_idx} | src.len: ${src.len} | sb.len: ${sb.len} | sb.cap: ${sb.cap}')
 	}
-	return sb.str()
+	return sb
 }
 
 fn (mut g Gen) gen_c_main_function_only_header() {
@@ -135,7 +135,12 @@ fn (mut g Gen) gen_c_main_function_header() {
 	g.gen_c_main_function_only_header()
 	g.gen_c_main_trace_calls_hook()
 	if !g.pref.no_builtin {
-		g.writeln2('\tg_main_argc = ___argc;', '\tg_main_argv = ___argv;')
+		if _ := g.table.global_scope.find_global('g_main_argc') {
+			g.writeln('\tg_main_argc = ___argc;')
+		}
+		if _ := g.table.global_scope.find_global('g_main_argv') {
+			g.writeln('\tg_main_argv = ___argv;')
+		}
 	}
 	if g.nr_closures > 0 {
 		g.writeln('\t__closure_init(); // main()')
@@ -244,7 +249,8 @@ pub fn (mut g Gen) gen_failing_error_propagation_for_test_fn(or_block ast.OrExpr
 	// `or { cb_propagate_test_error(@LINE, @FILE, @MOD, @FN, err.msg() ) }`
 	// and the test is considered failed
 	paline, pafile, pamod, pafn := g.panic_debug_info(or_block.pos)
-	err_msg := 'IError_name_table[${cvar_name}.err._typ]._method_msg(${cvar_name}.err._object)'
+	dot_or_ptr := if cvar_name in g.tmp_var_ptr { '->' } else { '.' }
+	err_msg := 'IError_name_table[${cvar_name}${dot_or_ptr}err._typ]._method_msg(${cvar_name}${dot_or_ptr}err._object)'
 	g.writeln('\tmain__TestRunner_name_table[test_runner._typ]._method_fn_error(test_runner._object, ${paline}, tos3("${pafile}"), tos3("${pamod}"), tos3("${pafn}"), ${err_msg} );')
 	g.writeln('\tlongjmp(g_jump_buffer, 1);')
 }
@@ -254,7 +260,8 @@ pub fn (mut g Gen) gen_failing_return_error_for_test_fn(return_stmt ast.Return, 
 	// `or { err := error('something') cb_propagate_test_error(@LINE, @FILE, @MOD, @FN, err.msg() ) return err }`
 	// and the test is considered failed
 	paline, pafile, pamod, pafn := g.panic_debug_info(return_stmt.pos)
-	err_msg := 'IError_name_table[${cvar_name}.err._typ]._method_msg(${cvar_name}.err._object)'
+	dot_or_ptr := if cvar_name in g.tmp_var_ptr { '->' } else { '.' }
+	err_msg := 'IError_name_table[${cvar_name}${dot_or_ptr}err._typ]._method_msg(${cvar_name}${dot_or_ptr}err._object)'
 	g.writeln('\tmain__TestRunner_name_table[test_runner._typ]._method_fn_error(test_runner._object, ${paline}, tos3("${pafile}"), tos3("${pamod}"), tos3("${pafn}"), ${err_msg} );')
 	g.writeln('\tlongjmp(g_jump_buffer, 1);')
 }
@@ -296,10 +303,10 @@ pub fn (mut g Gen) gen_c_main_for_tests() {
 		}
 		g.writeln('#endif')
 	}
+	g.writeln('\tmain__vtest_init();')
 	if !g.pref.no_builtin {
 		g.writeln('\t_vinit(___argc, (voidptr)___argv);')
 	}
-	g.writeln('\tmain__vtest_init();')
 	g.gen_c_main_profile_hook()
 
 	mut all_tfuncs := g.get_all_test_function_names()
@@ -386,4 +393,34 @@ pub fn (mut g Gen) gen_c_main_trace_calls_hook() {
 	}
 	should_trace_c_main := g.pref.should_trace_fn_name('C.main')
 	g.writeln('\tu8 bottom_of_stack = 0; g_stack_base = &bottom_of_stack; v__trace_calls__on_c_main(${should_trace_c_main});')
+}
+
+// gen_dll_main create DllMain() for windows .dll
+pub fn (mut g Gen) gen_dll_main() {
+	g.writeln('VV_EXPORTED_SYMBOL BOOL DllMain(HINSTANCE hinst,DWORD fdwReason,LPVOID lpvReserved) {
+	switch (fdwReason) {
+		case DLL_PROCESS_ATTACH : {
+#if defined(_VGCBOEHM)
+			GC_set_pages_executable(0);
+			GC_INIT();
+#endif
+			_vinit_caller();
+			break;
+		}
+		case DLL_THREAD_ATTACH : {
+			break;
+		}
+		case DLL_THREAD_DETACH : {
+			break;
+		}
+		case DLL_PROCESS_DETACH : {
+			_vcleanup_caller();
+			break;
+		}
+		default:
+			return false;
+	}
+	return true;
+}
+	')
 }

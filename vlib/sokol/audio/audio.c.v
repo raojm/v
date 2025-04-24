@@ -10,6 +10,8 @@ $if linux {
 #flag -I @VEXEROOT/thirdparty/sokol
 // FreeBSD requires the audio/alsa-lib to be installed
 #flag freebsd -I/usr/local/include
+
+@[use_once]
 #define SOKOL_IMPL
 #include "sokol_audio.h"
 #flag linux -lasound -lpthread
@@ -17,6 +19,7 @@ $if linux {
 #flag windows -lole32
 #flag freebsd -L/usr/local/lib
 #flag freebsd -lasound
+#flag android -laaudio
 
 // callback function for `stream_cb` in [[C.saudio_desc](#C.saudio_desc)] when calling [audio.setup()](#setup)
 //

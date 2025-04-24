@@ -107,6 +107,14 @@ fn (mut c Checker) return_stmt(mut node ast.Return) {
 					if expr.obj.smartcasts.len > 0 {
 						typ = c.unwrap_generic(expr.obj.smartcasts.last())
 					}
+					if expr.obj.ct_type_var != .no_comptime {
+						typ = c.type_resolver.get_type_or_default(expr, typ)
+					}
+					if mut expr.obj.expr is ast.IfGuardExpr {
+						if var := expr.scope.find_var(expr.name) {
+							typ = var.typ
+						}
+					}
 				}
 			}
 			got_types << typ
@@ -177,7 +185,7 @@ fn (mut c Checker) return_stmt(mut node ast.Return) {
 			}
 		}
 		arg := if expected_types.len == 1 { 'argument' } else { 'arguments' }
-		midx := imax(0, imin(expected_types.len, expr_idxs.len - 1))
+		midx := int_max(0, int_min(expected_types.len, expr_idxs.len - 1))
 		mismatch_pos := node.exprs[expr_idxs[midx]].pos()
 		c.error('expected ${expected_types.len} ${arg}, but got ${got_types.len}', mismatch_pos)
 		return
@@ -194,33 +202,30 @@ fn (mut c Checker) return_stmt(mut node ast.Return) {
 		}
 		got_type := c.unwrap_generic(got_types[i])
 		if got_type.has_flag(.option) && (!exp_type.has_flag(.option)
-			|| got_type.clear_flag(.option) != exp_type.clear_flag(.option)) {
-			pos := node.exprs[expr_idxs[i]].pos()
+			|| !c.check_types(got_type.clear_flag(.option), exp_type.clear_flag(.option))) {
 			c.error('cannot use `${c.table.type_to_str(got_type)}` as ${c.error_type_name(exp_type)} in return argument',
-				pos)
+				exprv.pos())
 		}
 		if got_type.has_flag(.result) && (!exp_type.has_flag(.result)
 			|| c.table.type_to_str(got_type) != c.table.type_to_str(exp_type)) {
-			pos := node.exprs[expr_idxs[i]].pos()
 			c.error('cannot use `${c.table.type_to_str(got_type)}` as ${c.error_type_name(exp_type)} in return argument',
-				pos)
+				exprv.pos())
 		}
 		if exprv is ast.ComptimeCall && exprv.method_name == 'tmpl'
 			&& c.table.final_sym(exp_type).kind != .string {
 			c.error('cannot use `string` as type `${c.table.type_to_str(exp_type)}` in return argument',
 				exprv.pos)
 		}
-		if node.exprs[expr_idxs[i]] !is ast.ComptimeCall {
+		if exprv !is ast.ComptimeCall {
 			got_type_sym := c.table.sym(got_type)
 			exp_type_sym := c.table.sym(exp_type)
-			pos := node.exprs[expr_idxs[i]].pos()
 			if c.check_types(got_type, exp_type) {
 				if exp_type.is_unsigned() && got_type.is_int_literal() {
-					if node.exprs[expr_idxs[i]] is ast.IntegerLiteral {
+					if exprv is ast.IntegerLiteral {
 						var := (node.exprs[expr_idxs[i]] as ast.IntegerLiteral).val
 						if var[0] == `-` {
 							c.note('cannot use a negative value as value of ${c.error_type_name(exp_type)} in return argument',
-								pos)
+								exprv.pos)
 						}
 					}
 				}
@@ -246,7 +251,7 @@ fn (mut c Checker) return_stmt(mut node ast.Return) {
 				if expected_fn_return_type_has_result && got_type_sym.kind == .struct
 					&& c.type_implements(got_type, ast.error_type, node.pos) {
 					node.exprs[expr_idxs[i]] = ast.CastExpr{
-						expr:      node.exprs[expr_idxs[i]]
+						expr:      exprv
 						typname:   'IError'
 						typ:       ast.error_type
 						expr_type: got_type
@@ -265,28 +270,26 @@ fn (mut c Checker) return_stmt(mut node ast.Return) {
 					continue
 				}
 				c.error('cannot use `${got_type_name}` as ${c.error_type_name(exp_type)} in return argument',
-					pos)
+					exprv.pos())
 			}
 		}
 		if got_type.is_any_kind_of_pointer() && !exp_type.is_any_kind_of_pointer()
 			&& !c.table.unaliased_type(exp_type).is_any_kind_of_pointer() {
-			pos := node.exprs[expr_idxs[i]].pos()
-			if node.exprs[expr_idxs[i]].is_auto_deref_var() {
+			if exprv.is_auto_deref_var() {
 				continue
 			}
 			c.add_error_detail('use `return *pointer` instead of `return pointer`, and just `return value` instead of `return &value`')
 			c.error('fn `${c.table.cur_fn.name}` expects you to return a non reference type `${c.table.type_to_str(exp_type)}`, but you are returning `${c.table.type_to_str(got_type)}` instead',
-				pos)
+				exprv.pos())
 		}
 		if exp_type.is_any_kind_of_pointer() && !got_type.is_any_kind_of_pointer()
 			&& !c.table.unaliased_type(got_type).is_any_kind_of_pointer()
 			&& got_type != ast.int_literal_type && !c.pref.translated && !c.file.is_translated {
-			pos := node.exprs[expr_idxs[i]].pos()
-			if node.exprs[expr_idxs[i]].is_auto_deref_var() {
+			if exprv.is_auto_deref_var() {
 				continue
 			}
 			c.error('fn `${c.table.cur_fn.name}` expects you to return a reference type `${c.table.type_to_str(exp_type)}`, but you are returning `${c.table.type_to_str(got_type)}` instead',
-				pos)
+				exprv.pos())
 		}
 		if exp_type.is_ptr() && got_type.is_ptr() {
 			mut r_expr := &node.exprs[expr_idxs[i]]
@@ -351,6 +354,10 @@ fn has_top_return(stmts []ast.Stmt) bool {
 					if stmt.expr.method_name == 'compile_error' {
 						return true
 					}
+				} else if stmt.expr is ast.LockExpr {
+					if has_top_return(stmt.expr.stmts) {
+						return true
+					}
 				}
 			}
 			else {}
@@ -380,7 +387,7 @@ fn (mut c Checker) check_noreturn_fn_decl(mut node ast.FnDecl) {
 			ast.ExprStmt {
 				if last_stmt.expr is ast.CallExpr {
 					if last_stmt.expr.should_be_skipped {
-						c.error('[noreturn] functions cannot end with a skippable `[if ..]` call',
+						c.error('@[noreturn] functions cannot end with a skippable `@[if ..]` call',
 							last_stmt.pos)
 						return
 					}
@@ -477,12 +484,4 @@ fn is_noreturn_callexpr(expr ast.Expr) bool {
 		return expr.is_noreturn
 	}
 	return false
-}
-
-fn imin(a int, b int) int {
-	return if a < b { a } else { b }
-}
-
-fn imax(a int, b int) int {
-	return if a < b { b } else { a }
 }

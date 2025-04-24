@@ -23,6 +23,7 @@ fn (mut g Gen) array_init(node ast.ArrayInit, var_name string) {
 		g.write('HEAP(${array_styp}, ')
 	}
 	len := node.exprs.len
+	elem_sym := g.table.sym(g.unwrap_generic(node.elem_type))
 	if array_type.unaliased_sym.kind == .array_fixed {
 		g.fixed_array_init(node, array_type, var_name, is_amp)
 		if is_amp {
@@ -44,22 +45,28 @@ fn (mut g Gen) array_init(node ast.ArrayInit, var_name string) {
 			g.writeln('')
 			g.write('\t\t')
 		}
+		is_sumtype := elem_sym.kind == .sum_type
 		for i, expr in node.exprs {
-			if node.expr_types[i] == ast.string_type
-				&& expr !in [ast.StringLiteral, ast.StringInterLiteral] {
-				g.write('string_clone(')
-				g.expr(expr)
-				g.write(')')
+			expr_type := if node.expr_types.len > i { node.expr_types[i] } else { node.elem_type }
+			if expr_type == ast.string_type
+				&& expr !in [ast.IndexExpr, ast.CallExpr, ast.StringLiteral, ast.StringInterLiteral, ast.InfixExpr] {
+				if is_sumtype {
+					g.expr_with_cast(expr, expr_type, node.elem_type)
+				} else {
+					g.write('string_clone(')
+					g.expr(expr)
+					g.write(')')
+				}
 			} else {
 				if node.elem_type.has_flag(.option) {
-					g.expr_with_opt(expr, node.expr_types[i], node.elem_type)
+					g.expr_with_opt(expr, expr_type, node.elem_type)
 				} else if elem_type.unaliased_sym.kind == .array_fixed
 					&& expr in [ast.Ident, ast.SelectorExpr] {
 					info := elem_type.unaliased_sym.info as ast.ArrayFixed
 					g.fixed_array_var_init(g.expr_string(expr), expr.is_auto_deref_var(),
 						info.elem_type, info.size)
 				} else {
-					g.expr_with_cast(expr, node.expr_types[i], node.elem_type)
+					g.expr_with_cast(expr, expr_type, node.elem_type)
 				}
 			}
 			if i != len - 1 {
@@ -100,19 +107,9 @@ fn (mut g Gen) fixed_array_init(node ast.ArrayInit, array_type Type, var_name st
 		}
 		g.write('{')
 		if node.has_val {
-			for i in 0 .. node.exprs.len {
-				g.write('0')
-				if i != node.exprs.len - 1 {
-					g.write(', ')
-				}
-			}
+			g.write_c99_0_elements_for_array(node.exprs.len)
 		} else if node.has_init {
-			for i in 0 .. array_info.size {
-				g.write('0')
-				if i != array_info.size - 1 {
-					g.write(', ')
-				}
-			}
+			g.write_c99_0_elements_for_array(array_info.size)
 		} else {
 			g.write('0')
 		}
@@ -135,14 +132,20 @@ fn (mut g Gen) fixed_array_init(node ast.ArrayInit, array_type Type, var_name st
 		g.set_current_pos_as_last_stmt_pos()
 		return
 	}
-	if g.inside_struct_init && g.inside_cast {
+	is_none := node.is_option && !node.has_init && !node.has_val
+
+	if (g.inside_struct_init && g.inside_cast && !g.inside_memset && !g.inside_opt_or_res)
+		|| (node.is_option && !is_none) {
 		ret_typ_str := g.styp(node.typ)
 		g.write('(${ret_typ_str})')
 	}
 	elem_sym := g.table.final_sym(node.elem_type)
 	is_struct := g.inside_array_fixed_struct && elem_sym.kind == .struct
-	if !is_struct {
+	if !is_struct && !is_none {
 		g.write('{')
+	}
+	if node.is_option && !is_none {
+		g.write('.state=0, .err=_const_none__, .data={')
 	}
 	if node.has_val {
 		tmp_inside_array := g.inside_array_item
@@ -150,27 +153,45 @@ fn (mut g Gen) fixed_array_init(node ast.ArrayInit, array_type Type, var_name st
 		defer {
 			g.inside_array_item = tmp_inside_array
 		}
+		nelen := node.exprs.len
 		for i, expr in node.exprs {
 			if elem_sym.kind == .array_fixed && expr in [ast.Ident, ast.SelectorExpr] {
 				elem_info := elem_sym.array_fixed_info()
 				g.fixed_array_var_init(g.expr_string(expr), expr.is_auto_deref_var(),
 					elem_info.elem_type, elem_info.size)
+			} else if elem_sym.kind == .array_fixed && expr is ast.CallExpr
+				&& g.table.final_sym(expr.return_type).kind == .array_fixed {
+				elem_info := elem_sym.array_fixed_info()
+				tmp_var := g.expr_with_var(expr, node.expr_types[i], false)
+				g.fixed_array_var_init(tmp_var, false, elem_info.elem_type, elem_info.size)
 			} else {
 				if expr.is_auto_deref_var() {
 					g.write('*')
 				}
 				g.expr(expr)
 			}
-			if i != node.exprs.len - 1 {
-				g.write(', ')
-			}
+			g.add_commas_and_prevent_long_lines(i, nelen)
 		}
 	} else if node.has_init {
 		info := array_type.unaliased_sym.info as ast.ArrayFixed
-		for i in 0 .. info.size {
-			g.expr_with_init(node)
-			if i != info.size - 1 {
-				g.write(', ')
+		if node.elem_type.has_flag(.option) {
+			for i in 0 .. info.size {
+				g.expr_with_init(node)
+				g.add_commas_and_prevent_long_lines(i, info.size)
+			}
+		} else {
+			if g.table.final_sym(info.elem_type).kind in [.struct, .interface] {
+				for i in 0 .. info.size {
+					g.expr_with_init(node)
+					g.add_commas_and_prevent_long_lines(i, info.size)
+				}
+			} else {
+				before_expr_pos := g.out.len
+				{
+					g.expr_with_init(node)
+				}
+				sexpr := g.out.cut_to(before_expr_pos)
+				g.write_c99_elements_for_array(info.size, sexpr)
 			}
 		}
 	} else if is_amp {
@@ -179,54 +200,58 @@ fn (mut g Gen) fixed_array_init(node ast.ArrayInit, array_type Type, var_name st
 		if elem_sym.kind == .map {
 			// fixed array for map -- [N]map[key_type]value_type
 			map_info := elem_sym.map_info()
-			for i in 0 .. array_info.size {
+			before_map_expr_pos := g.out.len
+			{
 				g.expr(ast.MapInit{
 					key_type:   map_info.key_type
 					value_type: map_info.value_type
 				})
-				if i != array_info.size - 1 {
-					g.write(', ')
-				}
 			}
+			smap_expr := g.out.cut_to(before_map_expr_pos)
+			g.write_all_n_elements_for_array(array_info.size, smap_expr)
 		} else if elem_sym.kind == .array_fixed {
 			// nested fixed array -- [N][N]type
 			arr_info := elem_sym.array_fixed_info()
-			for i in 0 .. array_info.size {
+			before_arr_expr_pos := g.out.len
+			{
 				g.expr(ast.ArrayInit{
 					exprs:     [ast.IntegerLiteral{}]
 					typ:       node.elem_type
 					elem_type: arr_info.elem_type
 				})
-				if i != array_info.size - 1 {
-					g.write(', ')
-				}
 			}
+			sarr_expr := g.out.cut_to(before_arr_expr_pos)
+			g.write_c99_elements_for_array(array_info.size, sarr_expr)
 		} else if elem_sym.kind == .chan {
 			// fixed array for chan -- [N]chan
 			chan_info := elem_sym.chan_info()
-			for i in 0 .. array_info.size {
-				g.expr(ast.ChanInit{
-					typ:       node.elem_type
-					elem_type: chan_info.elem_type
-				})
-				if i != array_info.size - 1 {
-					g.write(', ')
-				}
-			}
+			before_chan_expr_pos := g.out.len
+			g.expr(ast.ChanInit{
+				typ:       node.elem_type
+				elem_type: chan_info.elem_type
+			})
+			schan_expr := g.out.cut_to(before_chan_expr_pos)
+			g.write_c99_elements_for_array(array_info.size, schan_expr)
+		} else if is_none {
+			g.gen_option_error(node.typ, ast.None{})
 		} else {
-			for i in 0 .. array_info.size {
-				if node.elem_type.has_flag(.option) {
+			std := g.type_default(node.elem_type)
+			if g.can_use_c99_designators() && std == '0' {
+				g.write('0')
+			} else if node.elem_type.has_flag(.option) {
+				for i in 0 .. array_info.size {
 					g.expr_with_opt(ast.None{}, ast.none_type, node.elem_type)
-				} else {
-					g.write(g.type_default(node.elem_type))
+					g.add_commas_and_prevent_long_lines(i, array_info.size)
 				}
-				if i != array_info.size - 1 {
-					g.write(', ')
-				}
+			} else {
+				g.write_c99_elements_for_array(array_info.size, std)
 			}
 		}
 	}
-	if !is_struct {
+	if node.is_option && !is_none {
+		g.write('}')
+	}
+	if !is_struct && !is_none {
 		g.write('}')
 	}
 }
@@ -333,9 +358,15 @@ fn (mut g Gen) array_init_with_fields(node ast.ArrayInit, elem_type Type, is_amp
 		g.set_current_pos_as_last_stmt_pos()
 		g.indent++
 		g.writeln('int it = index;') // FIXME: Remove this line when it is fully forbidden
-		g.write('*pelem = ')
-		g.expr_with_init(node)
-		g.writeln(';')
+		if elem_type.unaliased_sym.kind != .array_fixed {
+			g.write('*pelem = ')
+			g.expr_with_init(node)
+			g.writeln(';')
+		} else {
+			g.write('memcpy(pelem, ')
+			g.expr_with_init(node)
+			g.writeln(', sizeof(${elem_styp}));')
+		}
 		g.indent--
 		g.writeln('}')
 		g.indent--
@@ -463,8 +494,29 @@ fn (mut g Gen) gen_array_map(node ast.CallExpr) {
 		g.past_tmp_var_done(past)
 	}
 
-	ret_styp := g.styp(node.return_type)
-	ret_sym := g.table.final_sym(node.return_type)
+	return_type := if g.type_resolver.is_generic_expr(node.args[0].expr) {
+		mut ctyp := ast.void_type
+		if node.args[0].expr is ast.CallExpr && node.args[0].expr.return_type_generic != 0
+			&& node.args[0].expr.return_type_generic.has_flag(.generic) {
+			ctyp = g.resolve_return_type(node.args[0].expr)
+			if g.table.type_kind(node.args[0].expr.return_type_generic) in [.array, .array_fixed] {
+				ctyp = ast.new_type(g.table.find_or_register_array(ctyp))
+			}
+		}
+		if ctyp == ast.void_type {
+			ctyp = g.type_resolver.unwrap_generic_expr(node.args[0].expr, node.return_type)
+		}
+		if g.table.type_kind(g.unwrap_generic(ctyp)) !in [.array, .array_fixed] {
+			ast.new_type(g.table.find_or_register_array(ctyp))
+		} else {
+			ctyp
+		}
+	} else {
+		node.return_type
+	}
+	ret_styp := g.styp(return_type)
+	ret_sym := g.table.final_sym(return_type)
+
 	left_is_array := g.table.final_sym(node.left_type).kind == .array
 	inp_sym := g.table.final_sym(node.receiver_type)
 
@@ -474,7 +526,6 @@ fn (mut g Gen) gen_array_map(node ast.CallExpr) {
 		(ret_sym.info as ast.ArrayFixed).elem_type
 	}
 	mut ret_elem_styp := g.styp(ret_elem_type)
-
 	inp_elem_type := if left_is_array {
 		(inp_sym.info as ast.Array).elem_type
 	} else {
@@ -517,7 +568,9 @@ fn (mut g Gen) gen_array_map(node ast.CallExpr) {
 	g.writeln('for (int ${i} = 0; ${i} < ${past.tmp_var}_len; ++${i}) {')
 	g.indent++
 	var_name := g.get_array_expr_param_name(mut expr)
-	g.write_prepared_var(var_name, inp_elem_type, inp_elem_styp, past.tmp_var, i, left_is_array)
+	is_auto_heap := expr is ast.CastExpr && (expr.expr is ast.Ident && expr.expr.is_auto_heap())
+	g.write_prepared_var(var_name, inp_elem_type, inp_elem_styp, past.tmp_var, i, left_is_array,
+		is_auto_heap)
 	g.set_current_pos_as_last_stmt_pos()
 	mut is_embed_map_filter := false
 	match mut expr {
@@ -553,7 +606,7 @@ fn (mut g Gen) gen_array_map(node ast.CallExpr) {
 			}
 		}
 		ast.CallExpr {
-			if expr.name in ['map', 'filter', 'all', 'any'] {
+			if expr.name in ['map', 'filter', 'all', 'any', 'count'] {
 				is_embed_map_filter = true
 				g.set_current_pos_as_last_stmt_pos()
 			}
@@ -562,9 +615,8 @@ fn (mut g Gen) gen_array_map(node ast.CallExpr) {
 		}
 		ast.CastExpr {
 			// value.map(Type(it)) when `value` is a comptime var
-			if expr.expr is ast.Ident && node.left is ast.Ident
-				&& g.comptime.is_comptime_var(node.left) {
-				ctyp := g.comptime.get_type(node.left)
+			if expr.expr is ast.Ident && node.left is ast.Ident && node.left.ct_expr {
+				ctyp := g.type_resolver.get_type(node.left)
 				if ctyp != ast.void_type {
 					expr.expr_type = g.table.value_type(ctyp)
 				}
@@ -575,6 +627,35 @@ fn (mut g Gen) gen_array_map(node ast.CallExpr) {
 		ast.LambdaExpr {
 			g.write('${ret_elem_styp} ${tmp_map_expr_result_name} = ')
 			g.expr(expr.expr)
+		}
+		ast.SelectorExpr {
+			if expr.typ != ast.void_type && g.table.final_sym(expr.typ).kind == .array_fixed {
+				atype := g.styp(expr.typ)
+				if closure_var_decl != '' {
+					g.write('memcpy(&${closure_var_decl}, &')
+					g.expr(expr)
+					g.write(', sizeof(${atype}))')
+				} else {
+					g.writeln('${ret_elem_styp} ${tmp_map_expr_result_name};')
+					g.write('memcpy(&${tmp_map_expr_result_name}, &')
+					g.expr(expr)
+					g.write(', sizeof(${atype}))')
+				}
+			} else {
+				if closure_var_decl != '' {
+					g.write('${closure_var_decl} = ')
+				} else {
+					g.write('${ret_elem_styp} ${tmp_map_expr_result_name} = ')
+				}
+				g.expr(expr)
+			}
+		}
+		ast.AsCast {
+			if expr.typ.has_flag(.generic) {
+				ret_elem_styp = g.styp(g.unwrap_generic(expr.typ))
+			}
+			g.write('${ret_elem_styp} ${tmp_map_expr_result_name} = ')
+			g.expr(expr)
 		}
 		else {
 			if closure_var_decl != '' {
@@ -702,7 +783,7 @@ fn (mut g Gen) gen_array_sort(node ast.CallExpr) {
 		left_name := infix_expr.left.str()
 		if left_name.len > 1 {
 			compare_fn += '_by' +
-				left_name[1..].replace_each(['.', '_', '[', '_', ']', '_', "'", '_', '"', '_', '(', '', ')', '', ',', ''])
+				left_name[1..].replace_each(['.', '_', '[', '_', ']', '_', "'", '_', '"', '_', '(', '', ')', '', ',', '', '/', '_'])
 		}
 		// is_reverse is `true` for `.sort(a > b)` and `.sort(b < a)`
 		is_reverse := (left_name.starts_with('a') && infix_expr.op == .gt)
@@ -744,7 +825,7 @@ fn (mut g Gen) gen_array_sort(node ast.CallExpr) {
 	}
 
 	stype_arg := g.styp(elem_type)
-	g.definitions.writeln('VV_LOCAL_SYMBOL ${g.static_modifier} int ${compare_fn}(${stype_arg}* a, ${stype_arg}* b) {')
+	g.sort_fn_definitions.writeln('VV_LOCAL_SYMBOL ${g.static_modifier} int ${compare_fn}(${stype_arg}* a, ${stype_arg}* b) {')
 	c_condition := if comparison_type.sym.has_method('<') {
 		'${g.styp(comparison_type.typ)}__lt(${left_expr}, ${right_expr})'
 	} else if comparison_type.unaliased_sym.has_method('<') {
@@ -754,9 +835,9 @@ fn (mut g Gen) gen_array_sort(node ast.CallExpr) {
 	} else {
 		'${left_expr} < ${right_expr}'
 	}
-	g.definitions.writeln('\tif (${c_condition}) return -1;')
-	g.definitions.writeln('\telse return 1;')
-	g.definitions.writeln('}\n')
+	g.sort_fn_definitions.writeln('\tif (${c_condition}) return -1;')
+	g.sort_fn_definitions.writeln('\telse return 1;')
+	g.sort_fn_definitions.writeln('}\n')
 
 	// write call to the generated function
 	g.gen_array_sort_call(node, compare_fn, left_is_array)
@@ -905,7 +986,8 @@ fn (mut g Gen) gen_array_filter(node ast.CallExpr) {
 	i := g.new_tmp_var()
 	g.writeln('for (int ${i} = 0; ${i} < ${past.tmp_var}_len; ++${i}) {')
 	g.indent++
-	g.write_prepared_var(var_name, info.elem_type, elem_type_str, past.tmp_var, i, true)
+	g.write_prepared_var(var_name, info.elem_type, elem_type_str, past.tmp_var, i, true,
+		false)
 	g.set_current_pos_as_last_stmt_pos()
 	mut is_embed_map_filter := false
 	match mut expr {
@@ -935,7 +1017,7 @@ fn (mut g Gen) gen_array_filter(node ast.CallExpr) {
 			}
 		}
 		ast.CallExpr {
-			if expr.name in ['map', 'filter', 'all', 'any'] {
+			if expr.name in ['map', 'filter', 'all', 'any', 'count'] {
 				is_embed_map_filter = true
 				g.set_current_pos_as_last_stmt_pos()
 			}
@@ -989,12 +1071,14 @@ fn (mut g Gen) gen_array_insert(node ast.CallExpr) {
 		g.expr(node.args[1].expr)
 		g.write('.len)')
 	} else {
+		needs_clone := left_info.elem_type == ast.string_type
+			&& node.args[1].expr !in [ast.IndexExpr, ast.CallExpr, ast.StringLiteral, ast.StringInterLiteral, ast.InfixExpr]
 		g.write(', &(${elem_type_str}[]){')
-		if left_info.elem_type == ast.string_type {
+		if needs_clone {
 			g.write('string_clone(')
 		}
 		g.expr_with_cast(node.args[1].expr, node.args[1].typ, left_info.elem_type)
-		if left_info.elem_type == ast.string_type {
+		if needs_clone {
 			g.write(')')
 		}
 		g.write('})')
@@ -1075,8 +1159,8 @@ fn (mut g Gen) gen_array_contains_methods() {
 				left_type_str = 'Array_voidptr'
 				elem_type_str = 'voidptr'
 			}
-			g.type_definitions.writeln('static bool ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
-			fn_builder.writeln('static bool ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
+			g.type_definitions.writeln('${g.static_non_parallel}bool ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
+			fn_builder.writeln('${g.static_non_parallel}bool ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
 			fn_builder.writeln('\tfor (int i = 0; i < a.len; ++i) {')
 			if elem_kind == .string {
 				fn_builder.writeln('\t\tif (fast_string_eq(((string*)a.data)[i], v)) {')
@@ -1117,8 +1201,8 @@ fn (mut g Gen) gen_array_contains_methods() {
 			if elem_kind == .function {
 				elem_type_str = 'voidptr'
 			}
-			g.type_definitions.writeln('static bool ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
-			fn_builder.writeln('static bool ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
+			g.type_definitions.writeln('${g.static_non_parallel}bool ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
+			fn_builder.writeln('${g.static_non_parallel}bool ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
 			fn_builder.writeln('\tfor (int i = 0; i < ${size}; ++i) {')
 			if elem_kind == .string {
 				fn_builder.writeln('\t\tif (fast_string_eq(a[i], v)) {')
@@ -1223,8 +1307,8 @@ fn (mut g Gen) gen_array_index_methods() {
 				left_type_str = 'Array_voidptr'
 				elem_type_str = 'voidptr'
 			}
-			g.type_definitions.writeln('static int ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
-			fn_builder.writeln('static int ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
+			g.type_definitions.writeln('${g.static_non_parallel}int ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
+			fn_builder.writeln('${g.static_non_parallel}int ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
 			fn_builder.writeln('\t${elem_type_str}* pelem = a.data;')
 			fn_builder.writeln('\tfor (int i = 0; i < a.len; ++i, ++pelem) {')
 			if elem_sym.kind == .string {
@@ -1267,8 +1351,8 @@ fn (mut g Gen) gen_array_index_methods() {
 			if elem_sym.kind == .function {
 				elem_type_str = 'voidptr'
 			}
-			g.type_definitions.writeln('static int ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
-			fn_builder.writeln('static int ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
+			g.type_definitions.writeln('${g.static_non_parallel}int ${fn_name}(${left_type_str} a, ${elem_type_str} v); // auto')
+			fn_builder.writeln('${g.static_non_parallel}int ${fn_name}(${left_type_str} a, ${elem_type_str} v) {')
 			fn_builder.writeln('\tfor (int i = 0; i < ${info.size}; ++i) {')
 			if elem_sym.kind == .string {
 				fn_builder.writeln('\t\tif (fast_string_eq(a[i], v)) {')
@@ -1404,7 +1488,8 @@ fn (mut g Gen) gen_array_any(node ast.CallExpr) {
 	g.writeln('for (int ${i} = 0; ${i} < ${past.tmp_var}_len; ++${i}) {')
 	g.indent++
 
-	g.write_prepared_var(var_name, elem_type, elem_type_str, past.tmp_var, i, left_is_array)
+	g.write_prepared_var(var_name, elem_type, elem_type_str, past.tmp_var, i, left_is_array,
+		false)
 	g.set_current_pos_as_last_stmt_pos()
 	mut is_embed_map_filter := false
 	match mut expr {
@@ -1434,7 +1519,7 @@ fn (mut g Gen) gen_array_any(node ast.CallExpr) {
 			}
 		}
 		ast.CallExpr {
-			if expr.name in ['map', 'filter', 'all', 'any'] {
+			if expr.name in ['map', 'filter', 'all', 'any', 'count'] {
 				is_embed_map_filter = true
 				g.set_current_pos_as_last_stmt_pos()
 			}
@@ -1452,6 +1537,97 @@ fn (mut g Gen) gen_array_any(node ast.CallExpr) {
 	}
 	g.writeln2(') {', '\t${past.tmp_var} = true;')
 	g.writeln2('\tbreak;', '}')
+	g.indent--
+	g.writeln('}')
+	if !is_embed_map_filter {
+		g.set_current_pos_as_last_stmt_pos()
+	}
+	if has_infix_left_var_name {
+		g.indent--
+		g.writeln('}')
+		g.set_current_pos_as_last_stmt_pos()
+	}
+}
+
+fn (mut g Gen) gen_array_count(node ast.CallExpr) {
+	past := g.past_tmp_var_new()
+	defer {
+		g.past_tmp_var_done(past)
+	}
+
+	sym := g.table.final_sym(node.left_type)
+	left_is_array := sym.kind == .array
+	elem_type := if left_is_array {
+		(sym.info as ast.Array).elem_type
+	} else {
+		(sym.info as ast.ArrayFixed).elem_type
+	}
+	elem_type_str := g.styp(elem_type)
+	has_infix_left_var_name := g.write_prepared_tmp_value(past.tmp_var, node, 'int', '0')
+
+	mut expr := node.args[0].expr
+	var_name := g.get_array_expr_param_name(mut expr)
+
+	mut closure_var := ''
+	if mut expr is ast.AnonFn {
+		if expr.inherited_vars.len > 0 {
+			closure_var = g.new_tmp_var()
+			g.declare_closure_fn(mut expr, closure_var)
+		}
+	}
+	i := g.new_tmp_var()
+	g.writeln('for (int ${i} = 0; ${i} < ${past.tmp_var}_len; ++${i}) {')
+	g.indent++
+
+	g.write_prepared_var(var_name, elem_type, elem_type_str, past.tmp_var, i, left_is_array,
+		false)
+	g.set_current_pos_as_last_stmt_pos()
+	mut is_embed_map_filter := false
+	match mut expr {
+		ast.AnonFn {
+			g.write('if (')
+			if expr.inherited_vars.len > 0 {
+				g.write_closure_fn(mut expr, var_name, closure_var)
+			} else {
+				g.gen_anon_fn_decl(mut expr)
+				g.write('${expr.decl.name}(${var_name})')
+			}
+		}
+		ast.Ident {
+			g.write('if (')
+			if expr.kind == .function {
+				g.write('${c_name(expr.name)}(${var_name})')
+			} else if expr.kind == .variable {
+				var_info := expr.var_info()
+				sym_t := g.table.sym(var_info.typ)
+				if sym_t.kind == .function {
+					g.write('${c_name(expr.name)}(${var_name})')
+				} else {
+					g.expr(expr)
+				}
+			} else {
+				g.expr(expr)
+			}
+		}
+		ast.CallExpr {
+			if expr.name in ['map', 'filter', 'all', 'any', 'count'] {
+				is_embed_map_filter = true
+				g.set_current_pos_as_last_stmt_pos()
+			}
+			g.write('if (')
+			g.expr(expr)
+		}
+		ast.LambdaExpr {
+			g.write('if (')
+			g.expr(expr.expr)
+		}
+		else {
+			g.write('if (')
+			g.expr(expr)
+		}
+	}
+	g.writeln2(') {', '\t++${past.tmp_var};')
+	g.writeln('}')
 	g.indent--
 	g.writeln('}')
 	if !is_embed_map_filter {
@@ -1496,7 +1672,8 @@ fn (mut g Gen) gen_array_all(node ast.CallExpr) {
 
 	g.writeln('for (int ${i} = 0; ${i} < ${past.tmp_var}_len; ++${i}) {')
 	g.indent++
-	g.write_prepared_var(var_name, elem_type, elem_type_str, past.tmp_var, i, left_is_array)
+	g.write_prepared_var(var_name, elem_type, elem_type_str, past.tmp_var, i, left_is_array,
+		false)
 	g.empty_line = true
 	g.set_current_pos_as_last_stmt_pos()
 	mut is_embed_map_filter := false
@@ -1527,7 +1704,7 @@ fn (mut g Gen) gen_array_all(node ast.CallExpr) {
 			}
 		}
 		ast.CallExpr {
-			if expr.name in ['map', 'filter', 'all', 'any'] {
+			if expr.name in ['map', 'filter', 'all', 'any', 'count'] {
 				is_embed_map_filter = true
 				g.set_current_pos_as_last_stmt_pos()
 			}
@@ -1607,7 +1784,7 @@ fn (mut g Gen) write_prepared_tmp_value(tmp string, node &ast.CallExpr, tmp_styp
 }
 
 fn (mut g Gen) write_prepared_var(var_name string, elem_type ast.Type, inp_elem_type string, tmp string,
-	i string, is_array bool) {
+	i string, is_array bool, auto_heap bool) {
 	elem_sym := g.table.sym(elem_type)
 	if is_array {
 		if elem_sym.kind == .array_fixed {
@@ -1616,16 +1793,34 @@ fn (mut g Gen) write_prepared_var(var_name string, elem_type ast.Type, inp_elem_
 		} else if elem_sym.kind == .function {
 			g.writeln('voidptr ${var_name} = ((${inp_elem_type}*) ${tmp}_orig.data)[${i}];')
 		} else {
-			g.writeln('${inp_elem_type} ${var_name} = ((${inp_elem_type}*) ${tmp}_orig.data)[${i}];')
+			g.write('${inp_elem_type} ')
+			if auto_heap {
+				g.write('*')
+			}
+			g.write('${var_name} = ')
+			if auto_heap {
+				g.write('&')
+			}
+			g.writeln('((${inp_elem_type}*) ${tmp}_orig.data)[${i}];')
 		}
 	} else {
 		if elem_sym.kind == .array_fixed {
 			g.writeln('${inp_elem_type} ${var_name};')
 			g.writeln('memcpy(&${var_name}, &${tmp}_orig[${i}], sizeof(${inp_elem_type}));')
+		} else if auto_heap {
+			g.writeln('${inp_elem_type} *${var_name} = &${tmp}_orig[${i}];')
 		} else if elem_sym.kind == .function {
 			g.writeln('voidptr ${var_name} = (voidptr)${tmp}_orig[${i}];')
 		} else {
-			g.writeln('${inp_elem_type} ${var_name} = ${tmp}_orig[${i}];')
+			g.write('${inp_elem_type} ')
+			if auto_heap {
+				g.write('*')
+			}
+			g.write('${var_name} = ')
+			if auto_heap {
+				g.write('&')
+			}
+			g.writeln('${tmp}_orig[${i}];')
 		}
 	}
 }
@@ -1641,6 +1836,47 @@ fn (mut g Gen) fixed_array_init_with_cast(expr ast.ArrayInit, typ ast.Type) {
 	} else {
 		g.write('(${g.styp(typ)})')
 		g.expr(expr)
+	}
+}
+
+fn (mut g Gen) fixed_array_update_expr_field(expr_str string, field_type ast.Type, field_name string, is_auto_deref bool, elem_type ast.Type, size int, is_update_embed bool) {
+	elem_sym := g.table.sym(elem_type)
+	if !g.inside_array_fixed_struct {
+		g.write('{')
+		defer {
+			g.write('}')
+		}
+	}
+	embed_field := if is_update_embed {
+		g.get_embed_field_name(field_type, field_name)
+	} else {
+		''
+	}
+	for i in 0 .. size {
+		if elem_sym.info is ast.ArrayFixed {
+			init_str := if g.inside_array_fixed_struct {
+				'${expr_str}'
+			} else {
+				'${expr_str}->${embed_field}${c_name(field_name)}[${i}]'
+			}
+			g.fixed_array_update_expr_field(init_str, field_type, field_name, is_auto_deref,
+				elem_sym.info.elem_type, elem_sym.info.size, is_update_embed)
+		} else {
+			g.write(expr_str)
+			if !expr_str.ends_with(']') {
+				if field_type.is_ptr() {
+					g.write('->')
+				} else {
+					g.write('.')
+				}
+				if is_update_embed {
+					g.write(embed_field)
+				}
+				g.write(c_name(field_name))
+			}
+			g.write('[${i}]')
+		}
+		g.add_commas_and_prevent_long_lines(i, size)
 	}
 }
 
@@ -1668,9 +1904,7 @@ fn (mut g Gen) fixed_array_var_init(expr_str string, is_auto_deref bool, elem_ty
 				g.write('[${i}]')
 			}
 		}
-		if i != size - 1 {
-			g.write(', ')
-		}
+		g.add_commas_and_prevent_long_lines(i, size)
 	}
 }
 
@@ -1680,4 +1914,67 @@ fn (mut g Gen) get_array_expr_param_name(mut expr ast.Expr) string {
 	} else {
 		'it'
 	}
+}
+
+const wrap_at_array_element = 0x0F
+
+fn (mut g Gen) add_commas_and_prevent_long_lines(i int, len int) {
+	if i != len - 1 {
+		g.write(', ')
+	}
+	// ensure there is a new line at least once per 16 array elements,
+	// to prevent too long lines to cause problems with gcc < gcc-11
+	if i & wrap_at_array_element == wrap_at_array_element && len - i > wrap_at_array_element {
+		g.writeln('')
+	}
+}
+
+@[inline]
+fn (mut g Gen) can_use_c99_designators() bool {
+	// see https://gcc.gnu.org/onlinedocs/gcc-4.1.0/gcc/Designated-Inits.html
+	// TODO: all compilers should get the same code, when they really support C99..
+	return !g.is_cc_msvc && !g.pref.output_cross_c
+}
+
+fn (mut g Gen) write_all_n_elements_for_array(len int, value string) {
+	for i in 0 .. len {
+		g.write(value)
+		g.add_commas_and_prevent_long_lines(i, len)
+	}
+}
+
+fn (mut g Gen) write_c99_elements_for_array(len int, value string) {
+	if len == 0 {
+		return
+	}
+	if g.can_use_c99_designators() {
+		if value in ['0', '{0}', '((u8)(0))', '{((u8)(0))}', '((u32)(0))', '{((u32)(0))}'] {
+			// zeros are fine for all compilers
+			g.write('0')
+			return
+		}
+		// TODO remove this check for != gcc, when this works:
+		// `screen_pixels [nb_tiles][nb_tiles]u32 = [nb_tiles][nb_tiles]u32{init: [nb_tiles]u32{init: u32(white)}}`
+		// i.e. when `white` as a constant can be handled by gcc without this error:
+		// `array initialized from non-constant array expression` error, or when `white` is substituted here with its number value.
+		if len > $d('cgen_c99_cutoff_limit', 64) {
+			if g.pref.ccompiler_type != .gcc {
+				if !value.contains('){.') {
+					// Currently, it is generating this, which works with clang and tcc, but not gcc: ` [0 ... 679] = ((u32)(_const_main__white)) `
+					g.write(' [0 ... ${len - 1}] = ${value} ')
+					return
+				}
+			}
+		}
+	}
+	g.write_all_n_elements_for_array(len, value)
+}
+
+@[inline]
+fn (mut g Gen) write_c99_0_elements_for_array(len int) {
+	if g.can_use_c99_designators() {
+		g.write('0')
+		return
+	}
+	g.write_all_n_elements_for_array(len, '0')
 }

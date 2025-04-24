@@ -29,13 +29,17 @@ fn (mut p Parser) array_init(is_option bool, alias_array_type ast.Type) ast.Arra
 			line_nr := p.tok.line_nr
 			p.next()
 			// []string
-			if p.tok.kind in [.name, .amp, .lsbr, .question, .key_shared]
+			if p.tok.kind in [.name, .amp, .lsbr, .question, .key_shared, .not]
 				&& p.tok.line_nr == line_nr {
 				elem_type_pos = p.tok.pos()
 				elem_type = p.parse_type()
 				// this is set here because it's a known type, others could be the
 				// result of expr so we do those in checker
 				if elem_type != 0 {
+					if elem_type.has_flag(.result) {
+						p.error_with_pos('arrays do not support storing Result values',
+							elem_type_pos)
+					}
 					idx := p.table.find_or_register_array(elem_type)
 					if elem_type.has_flag(.generic) {
 						array_type = ast.new_type(idx).set_flag(.generic)
@@ -52,7 +56,11 @@ fn (mut p Parser) array_init(is_option bool, alias_array_type ast.Type) ast.Arra
 		} else {
 			// [1,2,3] or [const]u8
 			old_inside_array_lit := p.inside_array_lit
+			old_last_enum_name := p.last_enum_name
+			old_last_enum_mod := p.last_enum_mod
 			p.inside_array_lit = true
+			p.last_enum_name = ''
+			p.last_enum_mod = ''
 			pre_cmnts = p.eat_comments()
 			for i := 0; p.tok.kind !in [.rsbr, .eof]; i++ {
 				exprs << p.expr(0)
@@ -63,6 +71,8 @@ fn (mut p Parser) array_init(is_option bool, alias_array_type ast.Type) ast.Arra
 				ecmnts.last() << p.eat_comments()
 			}
 			p.inside_array_lit = old_inside_array_lit
+			p.last_enum_name = old_last_enum_name
+			p.last_enum_mod = old_last_enum_mod
 			line_nr := p.tok.line_nr
 			last_pos = p.tok.pos()
 			p.check(.rsbr)
@@ -71,8 +81,11 @@ fn (mut p Parser) array_init(is_option bool, alias_array_type ast.Type) ast.Arra
 				|| (p.tok.kind == .lsbr && p.is_array_type())) {
 				// [100]u8
 				elem_type = p.parse_type()
-				if p.table.sym(elem_type).name == 'byte' {
-					p.error('`byte` has been deprecated in favor of `u8`: use `[10]u8{}` instead of `[10]byte{}`')
+				if elem_type != 0 {
+					s := p.table.sym(elem_type)
+					if s.name == 'byte' {
+						p.error('`byte` has been deprecated in favor of `u8`: use `[10]u8{}` instead of `[10]byte{}`')
+					}
 				}
 				last_pos = p.tok.pos()
 				is_fixed = true
@@ -192,6 +205,7 @@ fn (mut p Parser) array_init(is_option bool, alias_array_type ast.Type) ast.Arra
 		has_index:     has_index
 		cap_expr:      cap_expr
 		init_expr:     init_expr
+		is_option:     is_option
 	}
 }
 
@@ -253,11 +267,12 @@ fn (mut p Parser) map_init() ast.MapInit {
 
 fn (mut p Parser) scope_register_index() {
 	p.scope.objects['index'] = ast.Var{ // override index variable if it already exist, else create index variable
-		name:    'index'
-		pos:     p.tok.pos()
-		typ:     ast.int_type
-		is_mut:  false
-		is_used: false
+		name:         'index'
+		pos:          p.tok.pos()
+		typ:          ast.int_type
+		is_mut:       false
+		is_used:      false
+		is_index_var: true
 	}
 	p.scope.objects['it'] = ast.Var{ // it is now deprecated, will be removed in future stable release
 		name:    'it'

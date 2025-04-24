@@ -59,11 +59,6 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 	if p.inside_if_cond {
 		p.if_cond_comments << p.eat_comments()
 	}
-	inside_array_lit := p.inside_array_lit
-	p.inside_array_lit = false
-	defer {
-		p.inside_array_lit = inside_array_lit
-	}
 	// Prefix
 	match p.tok.kind {
 		.key_mut, .key_shared, .key_atomic, .key_static, .key_volatile {
@@ -73,7 +68,7 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 				ident := p.ident(.v)
 				node = ident
 				if p.peek_tok.kind != .assign && (p.inside_if_cond || p.inside_match) {
-					p.mark_var_as_used(ident.name)
+					p.scope.mark_var_as_used(ident.name)
 				}
 				p.add_defer_var(ident)
 				p.is_stmt_ident = is_stmt_ident
@@ -128,7 +123,7 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 					p.is_stmt_ident = is_stmt_ident
 				}
 				.key_if {
-					return p.if_expr(true)
+					return p.if_expr(true, false)
 				}
 				else {
 					return p.unexpected_with_pos(p.peek_tok.pos(),
@@ -222,7 +217,11 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 			if p.peek_tok.kind in [.lpar, .lsbr] && p.peek_tok.is_next_to(p.tok) {
 				node = p.call_expr(p.language, p.mod)
 			} else {
-				node = p.if_expr(false)
+				mut is_expr := false
+				if p.prev_tok.kind.is_assign() {
+					is_expr = true
+				}
+				node = p.if_expr(false, is_expr)
 			}
 		}
 		.key_unsafe {
@@ -356,7 +355,7 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 			} else {
 				p.check(.lpar)
 				pos := p.tok.pos()
-				mut is_known_var := p.mark_var_as_used(p.tok.lit)
+				mut is_known_var := p.scope.mark_var_as_used(p.tok.lit)
 					|| p.table.global_scope.known_const(p.mod + '.' + p.tok.lit)
 				//|| p.table.known_fn(p.mod + '.' + p.tok.lit)
 				// assume `mod.` prefix leads to a type
@@ -524,7 +523,7 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 				// variable name: type
 				ident := p.ident(.v)
 				node = ident
-				p.mark_var_as_used(ident.name)
+				p.scope.mark_var_as_used(ident.name)
 				p.add_defer_var(ident)
 				p.is_stmt_ident = is_stmt_ident
 			} else if p.tok.kind != .eof && !(p.tok.kind == .rsbr && p.inside_asm) {
@@ -535,7 +534,7 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 		}
 	}
 
-	if inside_array_lit {
+	if p.inside_array_lit {
 		if p.tok.kind in [.minus, .mul, .amp, .arrow] && p.tok.pos + 1 == p.peek_tok.pos
 			&& p.prev_tok.pos + p.prev_tok.len + 1 != p.peek_tok.pos {
 			return node
@@ -564,7 +563,8 @@ fn (mut p Parser) expr_with_left(left ast.Expr, precedence int, is_stmt_ident bo
 	for precedence < p.tok.kind.precedence() {
 		if p.tok.kind == .dot {
 			// no spaces or line break before dot in map_init
-			if p.inside_map_init && p.tok.pos - p.prev_tok.pos > p.prev_tok.len {
+			if (p.inside_map_init || p.inside_array_lit)
+				&& p.tok.pos - p.prev_tok.pos > p.prev_tok.len {
 				return node
 			}
 			node = p.dot_expr(node)
@@ -783,7 +783,9 @@ fn (mut p Parser) infix_expr(left ast.Expr) ast.Expr {
 
 	right_op_pos := p.tok.pos()
 	old_assign_rhs := p.inside_assign_rhs
-	p.inside_assign_rhs = true
+	if op in [.decl_assign, .assign] {
+		p.inside_assign_rhs = true
+	}
 	right = p.expr(precedence)
 	p.inside_assign_rhs = old_assign_rhs
 	if op in [.plus, .minus, .mul, .div, .mod, .lt, .eq] && mut right is ast.PrefixExpr {
@@ -802,7 +804,7 @@ fn (mut p Parser) infix_expr(left ast.Expr) ast.Expr {
 			right = ast.RangeExpr{
 				low:      right
 				has_low:  true
-				high:     p.expr(0)
+				high:     p.expr(int(token.Precedence.in_as))
 				has_high: true
 				pos:      pos_high
 				is_gated: false

@@ -178,6 +178,20 @@ fn test_sys_rng_intn() {
 	}
 }
 
+fn test_sys_rng_i32n() {
+	max := i32(2525642)
+	for seed in seeds {
+		seed_data := [seed]
+		mut rng := &rand.PRNG(&sys.SysRNG{})
+		rng.seed(seed_data)
+		for _ in 0 .. range_limit {
+			value := rng.i32n(max) or { panic("Couldn't obtain i32") }
+			assert value >= 0
+			assert value < max
+		}
+	}
+}
+
 fn test_sys_rng_i64n() {
 	max := i64(3246727724653636)
 	for seed in seeds {
@@ -207,6 +221,21 @@ fn test_sys_rng_int_in_range() {
 	}
 }
 
+fn test_sys_rng_i32_in_range() {
+	min := i32(-4252)
+	max := i32(23054962)
+	for seed in seeds {
+		seed_data := [seed]
+		mut rng := &rand.PRNG(&sys.SysRNG{})
+		rng.seed(seed_data)
+		for _ in 0 .. range_limit {
+			value := rng.i32_in_range(min, max) or { panic("Couldn't obtain i32 in range") }
+			assert value >= min
+			assert value < max
+		}
+	}
+}
+
 fn test_sys_rng_i64_in_range() {
 	min := i64(-24095)
 	max := i64(324058)
@@ -224,7 +253,7 @@ fn test_sys_rng_i64_in_range() {
 
 fn test_sys_rng_int31() {
 	max_u31 := int(0x7FFFFFFF)
-	sign_mask := int(0x80000000)
+	sign_mask := int(u32(0x80000000))
 	for seed in seeds {
 		seed_data := [seed]
 		mut rng := &rand.PRNG(&sys.SysRNG{})
@@ -241,7 +270,7 @@ fn test_sys_rng_int31() {
 
 fn test_sys_rng_int63() {
 	max_u63 := i64(0x7FFFFFFFFFFFFFFF)
-	sign_mask := i64(0x8000000000000000)
+	sign_mask := i64(u64(0x8000000000000000))
 	for seed in seeds {
 		seed_data := [seed]
 		mut rng := &rand.PRNG(&sys.SysRNG{})

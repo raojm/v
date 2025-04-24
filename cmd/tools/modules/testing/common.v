@@ -12,6 +12,7 @@ import v.util.vtest
 import runtime
 import rand
 import strings
+import v.build_constraint
 
 pub const max_header_len = get_max_header_len()
 
@@ -44,11 +45,19 @@ pub const is_node_present = os.execute('node --version').exit_code == 0
 
 pub const is_go_present = os.execute('go version').exit_code == 0
 
+pub const is_ruby_present = os.execute('ruby --version').exit_code == 0
+
+pub const is_python_present = os.execute('python --version').exit_code == 0
+
+pub const is_sqlite3_present = os.execute('sqlite3 --version').exit_code == 0
+
+pub const is_openssl_present = os.execute('openssl --version').exit_code == 0
+
 pub const all_processes = get_all_processes()
 
 pub const header_bytes_to_search_for_module_main = 500
 
-pub const separator = '-'.repeat(max_header_len)
+pub const separator = '-'.repeat(max_header_len) + '\n'
 
 pub const max_compilation_retries = get_max_compilation_retries()
 
@@ -98,6 +107,9 @@ pub mut:
 	hash          string // used as part of the name of the temporary directory created for tests, to ease cleanup
 
 	exec_mode ActionMode = .compile // .compile_and_run only for `v test`
+
+	build_environment build_constraint.Environment // see the documentation in v.build_constraint
+	custom_defines    []string                     // for adding custom defines, known only to the individual runners
 }
 
 pub fn (mut ts TestSession) add_failed_cmd(cmd string) {
@@ -216,95 +228,14 @@ pub fn (mut ts TestSession) print_messages() {
 pub fn new_test_session(_vargs string, will_compile bool) TestSession {
 	mut skip_files := []string{}
 	if will_compile {
-		// Skip the call_v_from_* files. They need special instructions for compilation.
-		// Check the README.md for detailed information.
-		skip_files << 'examples/call_v_from_c/v_test_print.v'
-		skip_files << 'examples/call_v_from_c/v_test_math.v'
-		skip_files << 'examples/call_v_from_python/test.v' // the example only makes sense to be compiled, when python is installed
-		skip_files << 'examples/call_v_from_ruby/test.v' // the example only makes sense to be compiled, when ruby is installed
-		// Skip the compilation of the coroutines example for now, since the Photon wrapper
-		// is only available on macos for now, and it is not yet trivial enough to
-		// build/install on the CI:
-		skip_files << 'examples/coroutines/simple_coroutines.v'
-		skip_files << 'examples/coroutines/coroutines_bench.v'
-		$if msvc {
-			skip_files << 'vlib/v/tests/consts/const_comptime_eval_before_vinit_test.v' // _constructor used
-		}
-		$if solaris {
-			skip_files << 'examples/pico/pico.v'
-			skip_files << 'examples/pico/raw_callback.v'
-			skip_files << 'examples/sokol/fonts.v'
-			skip_files << 'examples/sokol/drawing.v'
-		}
-		$if macos {
-			skip_files << 'examples/database/mysql.v'
-			skip_files << 'examples/database/orm.v'
-			skip_files << 'examples/database/psql/customer.v'
-		}
 		$if windows {
-			skip_files << 'examples/database/mysql.v'
-			skip_files << 'examples/database/orm.v'
-			skip_files << 'examples/smtp/mail.v' // requires OpenSSL
-			skip_files << 'examples/websocket/ping.v' // requires OpenSSL
-			skip_files << 'examples/websocket/client-server/client.v' // requires OpenSSL
-			skip_files << 'examples/websocket/client-server/server.v' // requires OpenSSL
-			skip_files << 'vlib/v/tests/websocket_logger_interface_should_compile_test.v' // requires OpenSSL
-			skip_files << 'vlib/crypto/ecdsa/ecdsa_test.v' // requires OpenSSL
-			$if tinyc {
-				skip_files << 'examples/database/orm.v' // try fix it
-			}
+			skip_files << 'examples/vanilla_http_server' // requires epoll // TODO: find a way to support `// vtest build:` for project folders too...
 		}
-		$if windows {
-			// TODO: remove when closures on windows are supported...
-			skip_files << 'examples/pendulum-simulation/animation.v'
-			skip_files << 'examples/pendulum-simulation/full.v'
-			skip_files << 'examples/pendulum-simulation/parallel.v'
-			skip_files << 'examples/pendulum-simulation/parallel_with_iw.v'
-			skip_files << 'examples/pendulum-simulation/sequential.v'
-			if github_job == 'tcc' {
-				// TODO: fix these by adding declarations for the missing functions in the prebuilt tcc
-				skip_files << 'vlib/net/mbedtls/mbedtls_compiles_test.v'
-				skip_files << 'vlib/net/ssl/ssl_compiles_test.v'
-			}
-		}
-		if runner_os != 'Linux' || github_job != 'tcc' {
+		if runner_os != 'Linux' || !github_job.starts_with('tcc-') {
 			if !os.exists('/usr/local/include/wkhtmltox/pdf.h') {
 				skip_files << 'examples/c_interop_wkhtmltopdf.v' // needs installation of wkhtmltopdf from https://github.com/wkhtmltopdf/packaging/releases
 			}
-			skip_files << 'vlib/vweb/vweb_app_test.v' // imports the `sqlite` module, which in turn includes sqlite3.h
-			skip_files << 'vlib/x/vweb/tests/vweb_app_test.v' // imports the `sqlite` module, which in turn includes sqlite3.h
-			skip_files << 'vlib/veb/tests/veb_app_test.v' // imports the `sqlite` module, which in turn includes sqlite3.h
 		}
-		$if !macos {
-			skip_files << 'examples/macos_tray/tray.v'
-		}
-		if github_job == 'ubuntu-docker-musl' {
-			skip_files << 'vlib/net/openssl/openssl_compiles_test.c.v'
-			skip_files << 'vlib/crypto/ecdsa/ecdsa_test.v'
-			skip_files << 'vlib/x/ttf/ttf_test.v'
-			skip_files << 'vlib/encoding/iconv/iconv_test.v' // needs libiconv to be installed
-		}
-		if github_job == 'tests-sanitize-memory-clang' {
-			skip_files << 'vlib/net/openssl/openssl_compiles_test.c.v'
-			skip_files << 'vlib/crypto/ecdsa/ecdsa_test.v'
-			// Fails compilation with: `/usr/bin/ld: /lib/x86_64-linux-gnu/libpthread.so.0: error adding symbols: DSO missing from command line`
-			skip_files << 'examples/sokol/sounds/simple_sin_tones.v'
-		}
-		if github_job != 'misc-tooling' {
-			// These examples need .h files that are produced from the supplied .glsl files,
-			// using by the shader compiler tools in https://github.com/floooh/sokol-tools-bin/archive/pre-feb2021-api-changes.tar.gz
-			skip_files << 'examples/sokol/02_cubes_glsl/cube_glsl.v'
-			skip_files << 'examples/sokol/03_march_tracing_glsl/rt_glsl.v'
-			skip_files << 'examples/sokol/04_multi_shader_glsl/rt_glsl.v'
-			skip_files << 'examples/sokol/05_instancing_glsl/rt_glsl.v'
-			skip_files << 'examples/sokol/07_simple_shader_glsl/simple_shader.v'
-			skip_files << 'examples/sokol/08_sdf/sdf.v'
-			// Skip obj_viewer code in the CI
-			skip_files << 'examples/sokol/06_obj_viewer/show_obj.v'
-		}
-		// requires special compilation flags: `-b wasm -os browser`, skip it for now:
-		skip_files << 'examples/wasm/mandelbrot/mandelbrot.wasm.v'
-		skip_files << 'examples/wasm/change_color_by_id/change_color_by_id.wasm.v'
 	}
 	skip_files = skip_files.map(os.abs_path)
 	vargs := _vargs.replace('-progress', '')
@@ -379,25 +310,9 @@ pub fn (mut ts TestSession) test() {
 	mut remaining_files := []string{}
 	for dot_relative_file in ts.files {
 		file := os.real_path(dot_relative_file)
-		$if windows {
-			if file.contains('sqlite') || file.contains('httpbin') {
-				continue
-			}
-		}
-		$if !macos {
-			if file.contains('customer') {
-				continue
-			}
-		}
-		$if msvc {
-			if file.contains('asm') {
-				continue
-			}
-		}
 		if ts.build_tools && dot_relative_file.ends_with('_test.v') {
 			continue
 		}
-
 		// Skip OS-specific tests if we are not running that OS
 		// Special case for android_outside_termux because of its
 		// underscores
@@ -431,6 +346,9 @@ pub fn (mut ts TestSession) test() {
 	printing_thread := spawn ts.print_messages()
 	pool_of_test_runners.set_shared_context(ts)
 	ts.reporter.worker_threads_start(remaining_files, mut ts)
+
+	ts.setup_build_environment()
+
 	// all the testing happens here:
 	pool_of_test_runners.work_on_pointers(unsafe { remaining_files.pointers() })
 
@@ -531,6 +449,7 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 	} else {
 		fname_without_extension
 	}
+	reproduce_options := cmd_options.clone()
 	generated_binary_fpath := os.join_path_single(test_folder_path, generated_binary_fname)
 	if produces_file_output {
 		if ts.rm_binaries {
@@ -548,15 +467,30 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 	if ts.show_stats {
 		skip_running = ''
 	}
+	reproduce_cmd := '${os.quoted_path(ts.vexe)} ${reproduce_options.join(' ')} ${os.quoted_path(file)}'
 	cmd := '${os.quoted_path(ts.vexe)} ${skip_running} ${cmd_options.join(' ')} ${os.quoted_path(file)}'
 	run_cmd := if run_js {
 		'node ${os.quoted_path(generated_binary_fpath)}'
 	} else {
 		os.quoted_path(generated_binary_fpath)
 	}
+	mut details := get_test_details(file)
+	mut should_be_built := true
+	if details.vbuild != '' {
+		should_be_built = ts.build_environment.eval(details.vbuild) or {
+			eprintln('${file}:${details.vbuild_line}:17: error during parsing the `// v test build` expression `${details.vbuild}`: ${err}')
+			false
+		}
+		$if trace_should_be_built ? {
+			eprintln('${file} has specific build constraint: `${details.vbuild}` => should_be_built: `${should_be_built}`')
+			eprintln('>          env   facts: ${ts.build_environment.facts}')
+			eprintln('>          env defines: ${ts.build_environment.defines}')
+		}
+	}
+
 	ts.benchmark.step()
 	tls_bench.step()
-	if !ts.build_tools && abs_path in ts.skip_files {
+	if !ts.build_tools && (!should_be_built || abs_path in ts.skip_files) {
 		ts.benchmark.skip()
 		tls_bench.skip()
 		if !hide_skips {
@@ -585,7 +519,6 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 		ts.append_message_with_duration(.cmd_end, '', cmd_duration, mtc)
 
 		if status != 0 {
-			details := get_test_details(file)
 			os.setenv('VTEST_RETRY_MAX', '${details.retry}', true)
 			for retry := 1; retry <= details.retry; retry++ {
 				if !details.hide_retries {
@@ -620,7 +553,7 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 			}
 			ts.benchmark.fail()
 			tls_bench.fail()
-			ts.add_failed_cmd(cmd)
+			ts.add_failed_cmd(reproduce_cmd)
 			return pool.no_result
 		}
 	} else {
@@ -650,7 +583,7 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 				cmd_duration,
 				preparation: compile_cmd_duration
 			), cmd_duration, mtc)
-			ts.add_failed_cmd(cmd)
+			ts.add_failed_cmd(reproduce_cmd)
 			return pool.no_result
 		}
 		tls_bench.step_restart()
@@ -672,14 +605,15 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 			println(r.output.split_into_lines().filter(it.contains(' assert')).join('\n'))
 		}
 		if r.exit_code != 0 {
-			mut details := get_test_details(file)
 			mut trimmed_output := r.output.trim_space()
 			if trimmed_output.len == 0 {
 				// retry running at least 1 more time, to avoid CI false positives as much as possible
 				details.retry++
 			}
-			failure_output.write_string(separator)
-			failure_output.writeln('\n retry: 0 ; max_retry: ${details.retry} ; r.exit_code: ${r.exit_code} ; trimmed_output.len: ${trimmed_output.len}')
+			if details.retry != 0 {
+				failure_output.write_string(separator)
+				failure_output.writeln(' retry: 0 ; max_retry: ${details.retry} ; r.exit_code: ${r.exit_code} ; trimmed_output.len: ${trimmed_output.len}')
+			}
 			failure_output.writeln(trimmed_output)
 			os.setenv('VTEST_RETRY_MAX', '${details.retry}', true)
 			for retry = 1; retry <= details.retry; retry++ {
@@ -702,7 +636,7 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 				}
 				trimmed_output = r.output.trim_space()
 				failure_output.write_string(separator)
-				failure_output.writeln('\n retry: ${retry} ; max_retry: ${details.retry} ; r.exit_code: ${r.exit_code} ; trimmed_output.len: ${trimmed_output.len}')
+				failure_output.writeln(' retry: ${retry} ; max_retry: ${details.retry} ; r.exit_code: ${r.exit_code} ; trimmed_output.len: ${trimmed_output.len}')
 				failure_output.writeln(trimmed_output)
 				time.sleep(fail_retry_delay_ms)
 			}
@@ -722,11 +656,10 @@ fn worker_trunner(mut p pool.PoolProcessor, idx int, thread_id int) voidptr {
 			tls_bench.fail()
 			cmd_duration = d_cmd.elapsed() - (fail_retry_delay_ms * details.retry)
 			ts.append_message_with_duration(.fail, tls_bench.step_message_with_label_and_duration(benchmark.b_fail,
-				'${normalised_relative_file}\n         retry: ${retry}\n      comp_cmd: ${cmd}\n       run_cmd: ${run_cmd}\nfailure code: ${r.exit_code}; foutput.len: ${full_failure_output.len}; failure output:\n${full_failure_output}',
-				cmd_duration,
+				'${normalised_relative_file}\n${full_failure_output}', cmd_duration,
 				preparation: compile_cmd_duration
 			), cmd_duration, mtc)
-			ts.add_failed_cmd(cmd)
+			ts.add_failed_cmd(reproduce_cmd)
 			return pool.no_result
 		}
 	}
@@ -784,9 +717,12 @@ pub fn prepare_test_session(zargs string, folder string, oskipped []string, main
 		}
 		c := os.read_file(fnormalised) or { panic(err) }
 		start := c#[0..header_bytes_to_search_for_module_main]
-		if start.contains('module ') && !start.contains('module main') {
-			skipped << fnormalised.replace(nparent_dir + '/', '')
-			continue next_file
+		if start.contains('module ') {
+			modname := start.all_after('module ').all_before('\n')
+			if modname !in ['main', 'no_main'] {
+				skipped << fnormalised.replace(nparent_dir + '/', '')
+				continue next_file
+			}
 		}
 		for skip_prefix in oskipped {
 			skip_folder := skip_prefix + '/'
@@ -877,18 +813,24 @@ pub mut:
 	retry int
 	flaky bool // when flaky tests fail, the whole run is still considered successful, unless VTEST_FAIL_FLAKY is 1
 	//
-	hide_retries bool // when true, all retry tries are silent; used by `vlib/v/tests/retry_test.v`
+	hide_retries bool   // when true, all retry tries are silent; used by `vlib/v/tests/retry_test.v`
+	vbuild       string // could be `!(windows && tinyc)`
+	vbuild_line  int    // for more precise error reporting, if the `vbuild` expression is incorrect
 }
 
 pub fn get_test_details(file string) TestDetails {
 	mut res := TestDetails{}
 	lines := os.read_lines(file) or { [] }
-	for line in lines {
+	for idx, line in lines {
 		if line.starts_with('// vtest retry:') {
 			res.retry = line.all_after(':').trim_space().int()
 		}
 		if line.starts_with('// vtest flaky:') {
 			res.flaky = line.all_after(':').trim_space().bool()
+		}
+		if line.starts_with('// vtest build:') {
+			res.vbuild = line.all_after(':').trim_space()
+			res.vbuild_line = idx + 1
 		}
 		if line.starts_with('// vtest hide_retries') {
 			res.hide_retries = true
@@ -930,4 +872,63 @@ fn get_max_header_len() int {
 		return maximum
 	}
 	return cols
+}
+
+// is_started_mysqld is true, when the test runner determines that there is a running mysql server
+pub const is_started_mysqld = find_started_process('mysqld') or { '' }
+
+// is_started_postgres is true, when the test runner determines that there is a running postgres server
+pub const is_started_postgres = find_started_process('postgres') or { '' }
+
+pub fn (mut ts TestSession) setup_build_environment() {
+	facts := os.getenv('VBUILD_FACTS').split_any(',')
+	mut defines := os.getenv('VBUILD_DEFINES').split_any(',')
+	// add the runtime information, that the test runner has already determined by checking once:
+	if is_started_mysqld != '' {
+		defines << 'started_mysqld'
+	}
+	if is_started_postgres != '' {
+		defines << 'started_postgres'
+	}
+	if is_node_present {
+		defines << 'present_node'
+	}
+	if is_python_present {
+		defines << 'present_python'
+	}
+	if is_ruby_present {
+		defines << 'present_ruby'
+	}
+	if is_go_present {
+		defines << 'present_go'
+	}
+	if is_sqlite3_present {
+		defines << 'present_sqlite3'
+	}
+	if is_openssl_present {
+		defines << 'present_openssl'
+	}
+
+	// detect the linux distribution as well when possible:
+	if os.is_file('/etc/os-release') {
+		mut distro_kind := ''
+		if lines := os.read_lines('/etc/os-release') {
+			for line in lines {
+				if line.starts_with('ID=') {
+					distro_kind = line.all_after('ID=')
+					break
+				}
+			}
+		}
+		if distro_kind != '' {
+			defines << 'os_id_${distro_kind}' // os_id_alpine, os_id_freebsd, os_id_ubuntu, os_id_debian etc
+		}
+	}
+
+	defines << ts.custom_defines
+	$if trace_vbuild ? {
+		eprintln('>>> testing.get_build_environment facts: ${facts}')
+		eprintln('>>> testing.get_build_environment defines: ${defines}')
+	}
+	ts.build_environment = build_constraint.new_environment(facts, defines)
 }

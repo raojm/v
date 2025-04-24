@@ -76,6 +76,7 @@ pub enum CompilerType {
 	gcc
 	tinyc
 	clang
+	emcc
 	mingw
 	msvc
 	cplusplus
@@ -105,12 +106,13 @@ pub mut:
 	is_shared          bool   // an ordinary shared library, -shared, no matter if it is live or not
 	is_o               bool   // building an .o file
 	is_prof            bool   // benchmark every function
-	is_prod            bool   // use "-O2"
+	is_prod            bool   // use "-O3"
+	no_prod_options    bool   // `-no-prod-options`, means do not pass any optimization flags to the C compilation, while still allowing the user to use for example `-cflags -Os` to pass custom ones
 	is_repl            bool
 	is_eval_argument   bool // true for `v -e 'println(2+2)'`. `println(2+2)` will be in pref.eval_argument .
 	is_run             bool // compile and run a v program, passing arguments to it, and deleting the executable afterwards
 	is_crun            bool // similar to run, but does not recompile the executable, if there were no changes to the sources
-	is_debug           bool // turned on by -g or -cg, it tells v to pass -g to the C backend compiler.
+	is_debug           bool // turned on by -g/-debug or -cg/-cdebug, it tells v to pass -g to the C backend compiler.
 	is_vlines          bool // turned on by -g (it slows down .tmp.c generation slightly).
 	is_stats           bool // `v -stats file.v` will produce more detailed statistics for the file that is compiled
 	show_asserts       bool // `VTEST_SHOW_ASSERTS=1 v file_test.v` will show details about the asserts done by a test file. Also activated for `-stats` and `-show-asserts`.
@@ -126,6 +128,7 @@ pub mut:
 	is_callstack       bool     // turn on callstack registers on each call when v.debug is imported
 	is_trace           bool     // turn on possibility to trace fn call where v.debug is imported
 	is_coverage        bool     // turn on code coverage stats
+	is_check_return    bool     // -check-return, will make V produce notices about *all* call expressions with unused results. NOTE: experimental!
 	eval_argument      string   // `println(2+2)` on `v -e "println(2+2)"`. Note that this source code, will be evaluated in vsh mode, so 'v -e 'println(ls(".")!)' is valid.
 	test_runner        string   // can be 'simple' (fastest, but much less detailed), 'tap', 'normal'
 	profile_file       string   // the profile results will be stored inside profile_file
@@ -134,7 +137,7 @@ pub mut:
 	profile_fns        []string // when set, profiling will be off by default, but inside these functions (and what they call) it will be on.
 	translated         bool     // `v translate doom.v` are we running V code translated from C? allow globals, ++ expressions, etc
 	translated_go      bool = true // Are we running V code translated from Go? Allow err shadowing
-	obfuscate          bool // `v -obf program.v`, renames functions to "f_XXX"
+	obfuscate_removed  bool // `v -obf program.v`, renames functions to "f_XXX". REMOVED. Use `strip` instead
 	hide_auto_str      bool // `v -hide-auto-str program.v`, doesn't generate str() with struct data
 	// Note: passing -cg instead of -g will set is_vlines to false and is_debug to true, thus making v generate cleaner C files,
 	// which are sometimes easier to debug / inspect manually than the .tmp.c files by plain -g (when/if v line number generation breaks).
@@ -146,6 +149,7 @@ pub mut:
 	show_c_output          bool   // -show-c-output, print all cc output even if the code was compiled correctly
 	show_callgraph         bool   // -show-callgraph, print the program callgraph, in a Graphviz DOT format to stdout
 	show_depgraph          bool   // -show-depgraph, print the program module dependency graph, in a Graphviz DOT format to stdout
+	show_unused_params     bool   // NOTE: temporary until making it a default.
 	dump_c_flags           string // `-dump-c-flags file.txt` - let V store all C flags, passed to the backend C compiler in `file.txt`, one C flag/value per line.
 	dump_modules           string // `-dump-modules modules.txt` - let V store all V modules, that were used by the compiled program in `modules.txt`, one module per line.
 	dump_files             string // `-dump-files files.txt` - let V store all V or .template file paths, that were used by the compiled program in `files.txt`, one path per line.
@@ -334,11 +338,15 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 		res.use_cache = true
 		res.skip_unused = true
 	} */
+	mut no_skip_unused := false
 
 	mut command, mut command_idx := '', 0
 	for i := 0; i < args.len; i++ {
 		arg := args[i]
 		match arg {
+			'--' {
+				break
+			}
 			'-wasm-validate' {
 				res.wasm_validate = true
 			}
@@ -437,6 +445,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 			'-nofloat' {
 				res.nofloat = true
 				res.compile_defines_all << 'nofloat' // so that `$if nofloat? {` works
+				res.compile_defines << 'nofloat'
 			}
 			'-fast-math' {
 				res.fast_math = true
@@ -512,12 +521,12 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				}
 				i++
 			}
-			'-g' {
+			'-g', '-debug' {
 				res.is_debug = true
 				res.is_vlines = true
 				res.build_options << arg
 			}
-			'-cg' {
+			'-cg', '-cdebug' {
 				res.is_debug = true
 				res.is_vlines = false
 				res.build_options << arg
@@ -600,6 +609,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.skip_unused = true
 			}
 			'-no-skip-unused' {
+				no_skip_unused = true
 				res.skip_unused = false
 			}
 			'-compress' {
@@ -663,6 +673,10 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.is_prod = true
 				res.build_options << arg
 			}
+			'-no-prod-options' {
+				res.no_prod_options = true
+				res.build_options << arg
+			}
 			'-sanitize' {
 				res.sanitize = true
 				res.build_options << arg
@@ -674,7 +688,8 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.is_stats = true
 			}
 			'-obf', '-obfuscate' {
-				res.obfuscate = true
+				println('obfuscation has been removed; use `strip` on the resulting binary instead')
+				res.obfuscate_removed = true
 			}
 			'-hide-auto-str' {
 				res.hide_auto_str = true
@@ -817,7 +832,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.build_options << '${arg}'
 			}
 			'-os' {
-				target_os := cmdline.option(args[i..], '-os', '')
+				target_os := cmdline.option(args[i..], '-os', '').to_lower_ascii()
 				i++
 				target_os_kind := os_from_string(target_os) or {
 					if target_os == 'cross' {
@@ -882,12 +897,6 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 			}
 			'-o', '-output' {
 				res.out_name = cmdline.option(args[i..], arg, '')
-				if res.out_name.ends_with('.js') {
-					res.backend = .js_node
-					res.output_cross_c = true
-				} else if res.out_name.ends_with('.o') {
-					res.is_o = true
-				}
 				if !os.is_abs_path(res.out_name) {
 					res.out_name = os.join_path(os.getwd(), res.out_name)
 				}
@@ -949,6 +958,12 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.parse_line_info(res.line_info)
 				i++
 			}
+			'-check-unused-fn-args' {
+				res.show_unused_params = true
+			}
+			'-check-return' {
+				res.is_check_return = true
+			}
 			'-use-coroutines' {
 				res.use_coroutines = true
 				$if macos || linux {
@@ -968,6 +983,14 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 					}
 					res.compile_defines << 'is_coroutine'
 					res.compile_defines_all << 'is_coroutine'
+					$if macos {
+						dyld_fallback_paths := os.getenv('DYLD_FALLBACK_LIBRARY_PATH')
+						so_dir := os.dir(so_path)
+						if !dyld_fallback_paths.contains(so_dir) {
+							env := [dyld_fallback_paths, so_dir].filter(it.len).join(':')
+							os.setenv('DYLD_FALLBACK_LIBRARY_PATH', env, true)
+						}
+					}
 				} $else {
 					println('coroutines only work on macos & linux for now')
 				}
@@ -1026,6 +1049,25 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 		res.is_run = true
 	}
 	res.show_asserts = res.show_asserts || res.is_stats || os.getenv('VTEST_SHOW_ASSERTS') != ''
+
+	if res.os != .wasm32_emscripten {
+		if res.out_name.ends_with('.js') {
+			res.backend = .js_node
+			res.output_cross_c = true
+		}
+	}
+
+	// Disable parallel checker on arm64 windows and linux for now
+	$if linux || windows {
+		$if arm64 {
+			res.no_parallel = true
+		}
+	}
+
+	if res.out_name.ends_with('.o') {
+		res.is_o = true
+	}
+
 	if command == 'run' && res.is_prod && os.is_atty(1) > 0 {
 		eprintln_cond(show_output && !res.is_quiet, "Note: building an optimized binary takes much longer. It shouldn't be used with `v run`.")
 		eprintln_cond(show_output && !res.is_quiet, 'Use `v run` without optimization, or build an optimized binary with -prod first, then run it separately.')
@@ -1052,7 +1094,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 		run_code_in_tmp_vfile_and_exit(args, mut res, '-e', 'vsh', res.eval_argument)
 	}
 
-	command_args := args[command_idx + 1..]
+	command_args := args#[command_idx + 1..]
 	if res.is_run || res.is_crun {
 		res.path = command_args[0] or { eprintln_exit('v run: no v files listed') }
 		res.run_args = command_args[1..]
@@ -1129,6 +1171,13 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 	res.build_options = m.keys()
 	// eprintln('>> res.build_options: $res.build_options')
 	res.fill_with_defaults()
+	if res.backend == .c {
+		res.skip_unused = res.build_mode != .build_module
+		if no_skip_unused {
+			res.skip_unused = false
+		}
+	}
+
 	return res, command
 }
 
@@ -1192,6 +1241,7 @@ pub fn cc_from_string(s string) CompilerType {
 		cc.contains('tcc') || cc.contains('tinyc') { .tinyc }
 		cc.contains('gcc') { .gcc }
 		cc.contains('clang') { .clang }
+		cc.contains('emcc') { .emcc }
 		cc.contains('msvc') { .msvc }
 		cc.contains('mingw') { .mingw }
 		cc.contains('++') { .cplusplus }
@@ -1224,11 +1274,10 @@ fn (mut prefs Preferences) parse_define(define string) {
 	prefs.compile_values[dname] = dvalue
 	prefs.compile_defines_all << dname
 	match dvalue {
-		'0' {}
-		'1' {
+		'' {}
+		else {
 			prefs.compile_defines << dname
 		}
-		else {}
 	}
 }
 
@@ -1238,4 +1287,9 @@ pub fn supported_test_runners_list() string {
 
 pub fn (pref &Preferences) should_trace_fn_name(fname string) bool {
 	return pref.trace_fns.any(fname.match_glob(it))
+}
+
+pub fn (pref &Preferences) should_use_segfault_handler() bool {
+	return !('no_segfault_handler' in pref.compile_defines
+		|| pref.os in [.wasm32, .wasm32_emscripten])
 }

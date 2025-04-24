@@ -13,7 +13,7 @@ import v.util.version
 import v.errors
 import v.pkgconfig
 import v.transformer
-import v.comptime
+import v.type_resolver
 
 // prevent stack overflows by restricting too deep recursion:
 const expr_level_cutoff_limit = 40
@@ -30,14 +30,14 @@ const generic_fn_postprocess_iterations_cutoff_limit = 1_000_000
 // Note that methods that do not return anything, or that return known types, are not listed here, since they are just ordinary non generic methods.
 pub const array_builtin_methods = ['filter', 'clone', 'repeat', 'reverse', 'map', 'slice', 'sort',
 	'sort_with_compare', 'sorted', 'sorted_with_compare', 'contains', 'index', 'wait', 'any', 'all',
-	'first', 'last', 'pop', 'delete', 'insert', 'prepend']
+	'first', 'last', 'pop', 'delete', 'insert', 'prepend', 'count']
 pub const array_builtin_methods_chk = token.new_keywords_matcher_from_array_trie(array_builtin_methods)
 pub const fixed_array_builtin_methods = ['contains', 'index', 'any', 'all', 'wait', 'map', 'sort',
-	'sorted', 'sort_with_compare', 'sorted_with_compare', 'reverse', 'reverse_in_place']
+	'sorted', 'sort_with_compare', 'sorted_with_compare', 'reverse', 'reverse_in_place', 'count']
 pub const fixed_array_builtin_methods_chk = token.new_keywords_matcher_from_array_trie(fixed_array_builtin_methods)
 // TODO: remove `byte` from this list when it is no longer supported
-pub const reserved_type_names = ['byte', 'bool', 'char', 'i8', 'i16', 'int', 'i64', 'u8', 'u16',
-	'u32', 'u64', 'f32', 'f64', 'map', 'string', 'rune', 'usize', 'isize', 'voidptr', 'thread']
+pub const reserved_type_names = ['bool', 'char', 'i8', 'i16', 'int', 'i64', 'u8', 'u16', 'u32',
+	'u64', 'f32', 'f64', 'map', 'string', 'rune', 'usize', 'isize', 'voidptr', 'thread']
 pub const reserved_type_names_chk = token.new_keywords_matcher_from_array_trie(reserved_type_names)
 pub const vroot_is_deprecated_message = '@VROOT is deprecated, use @VMODROOT or @VEXEROOT instead'
 
@@ -74,19 +74,22 @@ pub mut:
 	in_for_count                int      // if checker is currently in a for loop
 	returns                     bool
 	scope_returns               bool
-	is_builtin_mod              bool // true inside the 'builtin', 'os' or 'strconv' modules; TODO: remove the need for special casing this
-	is_just_builtin_mod         bool // true only inside 'builtin'
-	is_generated                bool // true for `@[generated] module xyz` .v files
-	inside_unsafe               bool // true inside `unsafe {}` blocks
-	inside_const                bool // true inside `const ( ... )` blocks
-	inside_anon_fn              bool // true inside `fn() { ... }()`
-	inside_lambda               bool // true inside `|...| ...`
-	inside_ref_lit              bool // true inside `a := &something`
-	inside_defer                bool // true inside `defer {}` blocks
-	inside_return               bool // true inside `return ...` blocks
-	inside_fn_arg               bool // `a`, `b` in `a.f(b)`
-	inside_ct_attr              bool // true inside `[if expr]`
-	inside_x_is_type            bool // true inside the Type expression of `if x is Type {`
+	is_builtin_mod              bool        // true inside the 'builtin', 'os' or 'strconv' modules; TODO: remove the need for special casing this
+	is_just_builtin_mod         bool        // true only inside 'builtin'
+	is_generated                bool        // true for `@[generated] module xyz` .v files
+	unresolved_fixed_sizes      []&ast.Stmt // funcs with unresolved array fixed size e.g. fn func() [const1]int
+	inside_recheck              bool        // true when rechecking rhs assign statement
+	inside_unsafe               bool        // true inside `unsafe {}` blocks
+	inside_const                bool        // true inside `const ( ... )` blocks
+	inside_anon_fn              bool        // true inside `fn() { ... }()`
+	inside_lambda               bool        // true inside `|...| ...`
+	inside_ref_lit              bool        // true inside `a := &something`
+	inside_defer                bool        // true inside `defer {}` blocks
+	inside_return               bool        // true inside `return ...` blocks
+	inside_fn_arg               bool        // `a`, `b` in `a.f(b)`
+	inside_ct_attr              bool        // true inside `[if expr]`
+	inside_x_is_type            bool        // true inside the Type expression of `if x is Type {`
+	anon_struct_should_be_mut   bool        // true when `mut var := struct { ... }` is used
 	inside_generic_struct_init  bool
 	inside_integer_literal_cast bool // true inside `int(123)`
 	cur_struct_generic_types    []ast.Type
@@ -114,9 +117,9 @@ mut:
 	loop_labels                      []string   // filled, when inside labelled for loops: `a_label: for x in 0..10 {`
 	vweb_gen_types                   []ast.Type // vweb route checks
 	timers                           &util.Timers = util.get_timers()
-	comptime_info_stack              []comptime.ComptimeInfo // stores the values from the above on each $for loop, to make nesting them easier
-	comptime                         comptime.ComptimeInfo
-	fn_scope                         &ast.Scope = unsafe { nil }
+	type_resolver                    type_resolver.TypeResolver
+	comptime                         &type_resolver.ResolverInfo = unsafe { nil }
+	fn_scope                         &ast.Scope                  = unsafe { nil }
 	main_fn_decl_node                ast.FnDecl
 	match_exhaustive_cutoff_limit    int = 10
 	is_last_stmt                     bool
@@ -126,6 +129,7 @@ mut:
 	generic_fns                      map[string]bool // register generic fns that needs recheck once
 	inside_sql                       bool            // to handle sql table fields pseudo variables
 	inside_selector_expr             bool
+	inside_or_block_value            bool // true inside or-block where its value is used `f(g() or { true })`
 	inside_interface_deref           bool
 	inside_decl_rhs                  bool
 	inside_if_guard                  bool // true inside the guard condition of `if x := opt() {}`
@@ -150,6 +154,11 @@ pub fn new_checker(table &ast.Table, pref_ &pref.Preferences) &Checker {
 	$if time_checking ? {
 		timers_should_print = true
 	}
+	v_current_commit_hash := if pref_.building_v {
+		version.githash(pref_.vroot) or { vcurrent_hash() }
+	} else {
+		vcurrent_hash()
+	}
 	mut checker := &Checker{
 		table:                         table
 		pref:                          pref_
@@ -158,13 +167,10 @@ pub fn new_checker(table &ast.Table, pref_ &pref.Preferences) &Checker {
 			label:        'checker'
 		)
 		match_exhaustive_cutoff_limit: pref_.checker_match_exhaustive_cutoff_limit
-		v_current_commit_hash:         if pref_.building_v { version.githash(pref_.vroot) or {
-				@VCURRENTHASH} } else { @VCURRENTHASH }
+		v_current_commit_hash:         v_current_commit_hash
 	}
-	checker.comptime = &comptime.ComptimeInfo{
-		resolver: checker
-		table:    table
-	}
+	checker.type_resolver = type_resolver.TypeResolver.new(table, checker)
+	checker.comptime = &checker.type_resolver.info
 	return checker
 }
 
@@ -288,7 +294,13 @@ pub fn (mut c Checker) check_scope_vars(sc &ast.Scope) {
 				ast.Var {
 					if !obj.is_used && obj.name[0] != `_` {
 						if !c.pref.translated && !c.file.is_translated {
-							c.warn('unused variable: `${obj.name}`', obj.pos)
+							if obj.is_arg {
+								if c.pref.show_unused_params {
+									c.note('unused parameter: `${obj.name}`', obj.pos)
+								}
+							} else {
+								c.warn('unused variable: `${obj.name}`', obj.pos)
+							}
 						}
 					}
 					if obj.is_mut && !obj.is_changed && !c.is_builtin_mod && obj.name != 'it' {
@@ -306,15 +318,6 @@ pub fn (mut c Checker) check_scope_vars(sc &ast.Scope) {
 	}
 }
 
-// not used right now
-pub fn (mut c Checker) check2(mut ast_file ast.File) []errors.Error {
-	c.change_current_file(ast_file)
-	for mut stmt in ast_file.stmts {
-		c.stmt(mut stmt)
-	}
-	return c.errors
-}
-
 pub fn (mut c Checker) change_current_file(file &ast.File) {
 	c.file = unsafe { file }
 	c.vmod_file_content = ''
@@ -326,6 +329,7 @@ pub fn (mut c Checker) check_files(ast_files []&ast.File) {
 	// println('check_files')
 	// c.files = ast_files
 	mut has_main_mod_file := false
+	mut has_no_main_mod_file := false
 	mut has_main_fn := false
 	unsafe {
 		mut files_from_main_module := []&ast.File{}
@@ -333,6 +337,9 @@ pub fn (mut c Checker) check_files(ast_files []&ast.File) {
 			mut file := ast_files[i]
 			c.timers.start('checker_check ${file.path}')
 			c.check(mut file)
+			if file.mod.name == 'no_main' {
+				has_no_main_mod_file = true
+			}
 			if file.mod.name == 'main' {
 				files_from_main_module << file
 				has_main_mod_file = true
@@ -448,6 +455,9 @@ pub fn (mut c Checker) check_files(ast_files []&ast.File) {
 		// This is useful for compiling linux kernel modules for example.
 		return
 	}
+	if has_no_main_mod_file {
+		return
+	}
 	if !has_main_mod_file {
 		c.error('project must include a `main` module or be a shared library (compile with `v -shared`)',
 			token.Pos{})
@@ -484,6 +494,7 @@ fn (mut c Checker) file_has_main_fn(file &ast.File) bool {
 	return has_main_fn
 }
 
+@[direct_array_access]
 fn (mut c Checker) check_valid_snake_case(name string, identifier string, pos token.Pos) {
 	if c.pref.translated || c.file.is_translated {
 		return
@@ -512,21 +523,21 @@ fn (mut c Checker) check_valid_pascal_case(name string, identifier string, pos t
 	}
 }
 
-fn (mut c Checker) type_decl(node ast.TypeDecl) {
+fn (mut c Checker) type_decl(mut node ast.TypeDecl) {
 	if node.typ == ast.invalid_type && (node is ast.AliasTypeDecl || node is ast.SumTypeDecl) {
 		typ_desc := if node is ast.AliasTypeDecl { 'alias' } else { 'sum type' }
 		c.error('cannot register ${typ_desc} `${node.name}`, another type with this name exists',
 			node.pos)
 		return
 	}
-	match node {
-		ast.AliasTypeDecl { c.alias_type_decl(node) }
-		ast.FnTypeDecl { c.fn_type_decl(node) }
-		ast.SumTypeDecl { c.sum_type_decl(node) }
+	match mut node {
+		ast.AliasTypeDecl { c.alias_type_decl(mut node) }
+		ast.FnTypeDecl { c.fn_type_decl(mut node) }
+		ast.SumTypeDecl { c.sum_type_decl(mut node) }
 	}
 }
 
-fn (mut c Checker) alias_type_decl(node ast.AliasTypeDecl) {
+fn (mut c Checker) alias_type_decl(mut node ast.AliasTypeDecl) {
 	if c.file.mod.name != 'builtin' && !node.name.starts_with('C.') {
 		c.check_valid_pascal_case(node.name, 'type alias', node.pos)
 	}
@@ -544,8 +555,10 @@ fn (mut c Checker) alias_type_decl(node ast.AliasTypeDecl) {
 		}
 		.alias {
 			orig_sym := c.table.sym((parent_typ_sym.info as ast.Alias).parent_type)
-			c.error('type `${parent_typ_sym.str()}` is an alias, use the original alias type `${orig_sym.name}` instead',
-				node.type_pos)
+			if !node.name.starts_with('C.') {
+				c.error('type `${parent_typ_sym.str()}` is an alias, use the original alias type `${orig_sym.name}` instead',
+					node.type_pos)
+			}
 		}
 		.chan {
 			c.error('aliases of `chan` types are not allowed', node.type_pos)
@@ -589,12 +602,17 @@ fn (mut c Checker) alias_type_decl(node ast.AliasTypeDecl) {
 				}
 				if parent_typ_sym.info.is_anon {
 					for field in parent_typ_sym.info.fields {
+						mut is_embed := false
 						field_sym := c.table.sym(field.typ)
 						if field_sym.info is ast.Alias {
 							if c.table.sym(field_sym.info.parent_type).kind != .struct {
 								c.error('cannot embed non-struct `${field_sym.name}`',
 									field.type_pos)
+								is_embed = true
 							}
+						}
+						if !is_embed {
+							c.check_valid_snake_case(field.name, 'field name', field.pos)
 						}
 					}
 				}
@@ -605,7 +623,11 @@ fn (mut c Checker) alias_type_decl(node ast.AliasTypeDecl) {
 				'array')
 		}
 		.array_fixed {
-			c.check_alias_vs_element_type_of_parent(node, (parent_typ_sym.info as ast.ArrayFixed).elem_type,
+			array_fixed_info := parent_typ_sym.info as ast.ArrayFixed
+			if c.array_fixed_has_unresolved_size(array_fixed_info) {
+				c.unresolved_fixed_sizes << &ast.TypeDecl(node)
+			}
+			c.check_alias_vs_element_type_of_parent(node, array_fixed_info.elem_type,
 				'fixed array')
 		}
 		.map {
@@ -657,7 +679,7 @@ fn (mut c Checker) check_any_type(typ ast.Type, sym &ast.TypeSymbol, pos token.P
 	}
 }
 
-fn (mut c Checker) fn_type_decl(node ast.FnTypeDecl) {
+fn (mut c Checker) fn_type_decl(mut node ast.FnTypeDecl) {
 	c.check_valid_pascal_case(node.name, 'fn type', node.pos)
 	typ_sym := c.table.sym(node.typ)
 	fn_typ_info := typ_sym.info as ast.FnType
@@ -678,7 +700,7 @@ fn (mut c Checker) fn_type_decl(node ast.FnTypeDecl) {
 	}
 }
 
-fn (mut c Checker) sum_type_decl(node ast.SumTypeDecl) {
+fn (mut c Checker) sum_type_decl(mut node ast.SumTypeDecl) {
 	c.check_valid_pascal_case(node.name, 'sum type', node.pos)
 	mut names_used := []string{}
 	for variant in node.variants {
@@ -795,6 +817,78 @@ fn (mut c Checker) expand_iface_embeds(idecl &ast.InterfaceDecl, level int, ifac
 	return ares
 }
 
+// fail_if_immutable_to_mutable checks if there is a immutable reference on right-side of assignment for mutable var
+fn (mut c Checker) fail_if_immutable_to_mutable(left_type ast.Type, right_type ast.Type, right ast.Expr) bool {
+	match right {
+		ast.Ident {
+			if c.inside_unsafe || c.pref.translated || c.file.is_translated {
+				return true
+			}
+			if right.obj is ast.Var {
+				if left_type.is_ptr() && !right.is_mut() && right_type.is_ptr() {
+					c.note('`${right.name}` is immutable, cannot have a mutable reference to an immutable object',
+						right.pos)
+					return false
+				}
+				if !right.obj.is_mut
+					&& c.table.final_sym(right_type).kind in [.array, .array_fixed, .map] {
+					c.note('left-side of assignment expects a mutable reference, but variable `${right.name}` is immutable, declare it with `mut` to make it mutable or clone it',
+						right.pos)
+					return false
+				}
+			}
+		}
+		ast.IfExpr {
+			if c.inside_unsafe || c.pref.translated || c.file.is_translated {
+				return true
+			}
+			for branch in right.branches {
+				stmts := branch.stmts.filter(it is ast.ExprStmt)
+				if stmts.len > 0 {
+					last_expr := stmts.last() as ast.ExprStmt
+					c.fail_if_immutable_to_mutable(left_type, right_type, last_expr.expr)
+				}
+			}
+		}
+		ast.MatchExpr {
+			if c.inside_unsafe || c.pref.translated || c.file.is_translated {
+				return true
+			}
+			for branch in right.branches {
+				stmts := branch.stmts.filter(it is ast.ExprStmt)
+				if stmts.len > 0 {
+					last_expr := stmts.last() as ast.ExprStmt
+					c.fail_if_immutable_to_mutable(left_type, right_type, last_expr.expr)
+				}
+			}
+		}
+		ast.StructInit {
+			typ_sym := c.table.sym(right.typ)
+			for init_field in right.init_fields {
+				if field_info := c.table.find_field_with_embeds(typ_sym, init_field.name) {
+					if field_info.is_mut {
+						if init_field.expr is ast.Ident && !init_field.expr.is_mut()
+							&& init_field.typ.is_ptr() {
+							c.note('`${init_field.expr.name}` is immutable, cannot have a mutable reference to an immutable object',
+								init_field.pos)
+						} else if init_field.expr is ast.PrefixExpr {
+							if init_field.expr.op == .amp && init_field.expr.right is ast.Ident
+								&& !init_field.expr.right.is_mut() {
+								c.note('`${init_field.expr.right.name}` is immutable, cannot have a mutable reference to an immutable object',
+									init_field.expr.right.pos)
+							}
+						}
+					}
+				}
+			}
+		}
+		else {
+			return true
+		}
+	}
+	return true
+}
+
 // returns name and position of variable that needs write lock
 // also sets `is_changed` to true (TODO update the name to reflect this?)
 fn (mut c Checker) fail_if_immutable(mut expr ast.Expr) (string, token.Pos) {
@@ -810,9 +904,7 @@ fn (mut c Checker) fail_if_immutable(mut expr ast.Expr) (string, token.Pos) {
 			mut expr_left := expr.left
 			if mut expr.left is ast.Ident {
 				if mut expr.left.obj is ast.Var {
-					if expr.left.obj.ct_type_var != .generic_param {
-						c.fail_if_immutable(mut expr_left)
-					}
+					c.fail_if_immutable(mut expr_left)
 				}
 			}
 			return '', expr.pos
@@ -846,7 +938,7 @@ fn (mut c Checker) fail_if_immutable(mut expr ast.Expr) (string, token.Pos) {
 					}
 				}
 			} else if expr.obj is ast.ConstField && expr.name in c.const_names {
-				if !c.inside_unsafe && !c.pref.translated {
+				if !c.pref.translated {
 					// TODO: fix this in c2v, do not allow modification of all consts
 					// in translated code
 					c.error('cannot modify constant `${expr.name}`', expr.pos)
@@ -1317,6 +1409,8 @@ fn (mut c Checker) check_expr_option_or_result_call(expr ast.Expr, ret_type ast.
 }
 
 fn (mut c Checker) check_or_expr(node ast.OrExpr, ret_type ast.Type, expr_return_type ast.Type, expr ast.Expr) {
+	c.markused_option_or_result(!c.is_builtin_mod && node.kind != .absent && c.mod != 'strings')
+
 	if node.kind == .propagate_option {
 		if c.table.cur_fn != unsafe { nil } && !c.table.cur_fn.return_type.has_flag(.option)
 			&& !c.table.cur_fn.is_main && !c.table.cur_fn.is_test && !c.inside_const {
@@ -1329,7 +1423,7 @@ fn (mut c Checker) check_or_expr(node ast.OrExpr, ret_type ast.Type, expr_return
 					node.pos)
 			}
 		}
-		if expr !is ast.Ident && !expr_return_type.has_flag(.option) {
+		if expr !in [ast.Ident, ast.SelectorExpr] && !expr_return_type.has_flag(.option) {
 			if expr_return_type.has_flag(.result) {
 				c.error('propagating a Result like an Option is deprecated, use `foo()!` instead of `foo()?`',
 					node.pos)
@@ -1354,16 +1448,25 @@ fn (mut c Checker) check_or_expr(node ast.OrExpr, ret_type ast.Type, expr_return
 		return
 	}
 	if node.stmts.len == 0 {
-		if ret_type != ast.void_type {
-			// x := f() or {}
-			c.error('assignment requires a non empty `or {}` block', node.pos)
+		if expr is ast.CallExpr && expr.is_return_used {
+			// x := f() or {}, || f() or {} etc
+			c.error('expression requires a non empty `or {}` block', node.pos)
+		} else if expr !is ast.CallExpr && ret_type != ast.void_type {
+			// _ := sql db {... } or { }
+			c.error('expression requires a non empty `or {}` block', node.pos)
 		}
 		// allow `f() or {}`
 		return
 	}
 	mut valid_stmts := node.stmts.filter(it !is ast.SemicolonStmt)
 	mut last_stmt := if valid_stmts.len > 0 { valid_stmts.last() } else { node.stmts.last() }
-	c.check_or_last_stmt(mut last_stmt, ret_type, expr_return_type.clear_option_and_result())
+	if expr !is ast.CallExpr || (expr is ast.CallExpr && expr.is_return_used) {
+		// requires a block returning an unwrapped type of expr return type
+		c.check_or_last_stmt(mut last_stmt, ret_type, expr_return_type.clear_option_and_result())
+	} else {
+		// allow f() or { var = 123 }
+		c.check_or_last_stmt(mut last_stmt, ast.void_type, expr_return_type.clear_option_and_result())
+	}
 }
 
 fn (mut c Checker) check_or_last_stmt(mut stmt ast.Stmt, ret_type ast.Type, expr_return_type ast.Type) {
@@ -1372,6 +1475,10 @@ fn (mut c Checker) check_or_last_stmt(mut stmt ast.Stmt, ret_type ast.Type, expr
 			ast.ExprStmt {
 				c.expected_type = ret_type
 				c.expected_or_type = ret_type.clear_option_and_result()
+				if c.inside_or_block_value && stmt.expr is ast.None && ret_type.has_flag(.option) {
+					// return call() or { none } where fn returns an Option type
+					return
+				}
 				last_stmt_typ := c.expr(mut stmt.expr)
 				if last_stmt_typ.has_flag(.option) || last_stmt_typ == ast.none_type {
 					if stmt.expr in [ast.Ident, ast.SelectorExpr, ast.CallExpr, ast.None, ast.CastExpr] {
@@ -1437,9 +1544,11 @@ fn (mut c Checker) check_or_last_stmt(mut stmt ast.Stmt, ret_type ast.Type, expr
 			}
 			ast.Return {}
 			else {
-				expected_type_name := c.table.type_to_str(ret_type.clear_option_and_result())
-				c.error('last statement in the `or {}` block should be an expression of type `${expected_type_name}` or exit parent scope',
-					stmt.pos)
+				if stmt !is ast.AssertStmt || c.inside_or_block_value {
+					expected_type_name := c.table.type_to_str(ret_type.clear_option_and_result())
+					c.error('last statement in the `or {}` block should be an expression of type `${expected_type_name}` or exit parent scope',
+						stmt.pos)
+				}
 			}
 		}
 	} else if mut stmt is ast.ExprStmt {
@@ -1493,10 +1602,8 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 
 	using_new_err_struct_save := c.using_new_err_struct
 	// TODO: remove; this avoids a breaking change in syntax
-	if node.expr is ast.Ident {
-		if node.expr.str() == 'err' {
-			c.using_new_err_struct = true
-		}
+	if node.expr is ast.Ident && node.expr.name == 'err' {
+		c.using_new_err_struct = true
 	}
 
 	// T.name, typeof(expr).name
@@ -1537,7 +1644,8 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 			else {
 				if node.field_name == 'name' {
 					return ast.string_type
-				} else if node.field_name in ['idx', 'unaliased_typ'] {
+				} else if node.field_name in ['idx', 'unaliased_typ', 'key_type', 'value_type',
+					'element_type'] {
 					return ast.int_type
 				} else if node.field_name == 'indirections' {
 					return ast.int_type
@@ -1555,6 +1663,7 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 			return node.expr_type
 		}
 	}
+	node.is_field_typ = node.is_field_typ || c.comptime.is_comptime_selector_type(node)
 	old_selector_expr := c.inside_selector_expr
 	c.inside_selector_expr = true
 	mut typ := c.expr(mut node.expr)
@@ -1576,7 +1685,8 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 	} else if c.comptime.inside_comptime_for && typ == c.enum_data_type
 		&& node.field_name == 'value' {
 		// for comp-time enum.values
-		node.expr_type = c.comptime.type_map['${c.comptime.comptime_for_enum_var}.typ']
+		node.expr_type = c.type_resolver.get_ct_type_or_default('${c.comptime.comptime_for_enum_var}.typ',
+			node.expr_type)
 		node.typ = typ
 		return node.expr_type
 	}
@@ -1609,8 +1719,8 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 	mut unknown_field_msg := ''
 	mut has_field := false
 	mut field := ast.StructField{}
-	if field_name.len > 0 && field_name[0].is_capital() && sym.info is ast.Struct
-		&& sym.language == .v {
+	if field_name.len > 0 && sym.info is ast.Struct && sym.language == .v
+		&& field_name[0].is_capital() {
 		// x.Foo.y => access the embedded struct
 		for embed in sym.info.embeds {
 			embed_sym := c.table.sym(embed)
@@ -1678,7 +1788,7 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 	}
 
 	if has_field {
-		is_used_outside := sym.mod != c.mod
+		is_used_outside := !c.inside_recheck && sym.mod != c.mod
 		if is_used_outside && !field.is_pub && sym.language != .c {
 			unwrapped_sym := c.table.sym(c.unwrap_generic(typ))
 			c.error('field `${unwrapped_sym.name}.${field_name}` is not public', node.pos)
@@ -1687,27 +1797,33 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 		if field.is_deprecated && is_used_outside {
 			c.deprecate('field', field_name, field.attrs, node.pos)
 		}
-		if field_sym.kind in [.sum_type, .interface] {
+		if field_sym.kind in [.sum_type, .interface] || field.typ.has_flag(.option) {
 			if !prevent_sum_type_unwrapping_once {
-				if scope_field := node.scope.find_struct_field(node.expr.str(), typ, field_name) {
+				scope_field := node.scope.find_struct_field(node.expr.str(), typ, field_name)
+				if scope_field != unsafe { nil } {
 					return scope_field.smartcasts.last()
 				}
 			}
 		}
 		node.typ = field.typ
-		if node.or_block.kind == .block {
-			c.expected_or_type = node.typ.clear_option_and_result()
+		if node.or_block.kind != .absent {
+			unwrapped_typ := c.unwrap_generic(node.typ)
+			c.expected_or_type = unwrapped_typ.clear_option_and_result()
 			c.stmts_ending_with_expression(mut node.or_block.stmts, c.expected_or_type)
-			c.check_or_expr(node.or_block, node.typ, c.expected_or_type, node)
+			c.check_or_expr(node.or_block, unwrapped_typ, c.expected_or_type, node)
 			c.expected_or_type = ast.void_type
 		}
+		c.markused_option_or_result(node.or_block.kind != .absent
+			&& !c.table.used_features.option_or_result)
 		return field.typ
 	}
 	if mut method := c.table.sym(c.unwrap_generic(typ)).find_method_with_generic_parent(field_name) {
+		c.markused_comptime_call(typ.has_flag(.generic), '${int(method.params[0].typ)}.${field_name}')
 		if c.expected_type != 0 && c.expected_type != ast.none_type {
 			fn_type := ast.new_type(c.table.find_or_register_fn_type(method, false, true))
 			// if the expected type includes the receiver, don't hide it behind a closure
 			if c.check_types(fn_type, c.expected_type) {
+				c.table.used_features.anon_fn = true
 				return fn_type
 			}
 		}
@@ -1731,6 +1847,7 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 		method.name = ''
 		fn_type := ast.new_type(c.table.find_or_register_fn_type(method, false, true))
 		node.typ = c.unwrap_generic(fn_type)
+		c.table.used_features.anon_fn = true
 		return fn_type
 	}
 	if sym.kind !in [.struct, .aggregate, .interface, .sum_type] {
@@ -2117,71 +2234,6 @@ fn (mut c Checker) stmt(mut node ast.Stmt) {
 	}
 	c.expected_type = ast.void_type
 	match mut node {
-		ast.EmptyStmt {
-			if c.pref.is_verbose {
-				eprintln('Checker.stmt() EmptyStmt')
-				print_backtrace()
-			}
-		}
-		ast.NodeError {}
-		ast.DebuggerStmt {}
-		ast.AsmStmt {
-			c.asm_stmt(mut node)
-		}
-		ast.AssertStmt {
-			c.assert_stmt(mut node)
-		}
-		ast.AssignStmt {
-			c.assign_stmt(mut node)
-		}
-		ast.Block {
-			c.block(mut node)
-		}
-		ast.BranchStmt {
-			c.branch_stmt(node)
-		}
-		ast.ComptimeFor {
-			c.comptime_for(mut node)
-		}
-		ast.ConstDecl {
-			c.inside_const = true
-			c.const_decl(mut node)
-			c.inside_const = false
-		}
-		ast.DeferStmt {
-			if node.idx_in_fn < 0 && c.table.cur_fn != unsafe { nil } {
-				node.idx_in_fn = c.table.cur_fn.defer_stmts.len
-				c.table.cur_fn.defer_stmts << unsafe { &node }
-			}
-			if c.locked_names.len != 0 || c.rlocked_names.len != 0 {
-				c.error('defers are not allowed in lock statements', node.pos)
-			}
-			for i, ident in node.defer_vars {
-				mut id := ident
-				if mut id.info is ast.IdentVar {
-					if id.comptime && (id.tok_kind == .question
-						|| id.name in ast.valid_comptime_not_user_defined) {
-						node.defer_vars[i] = ast.Ident{
-							scope: unsafe { nil }
-							name:  ''
-						}
-						continue
-					}
-					typ := c.ident(mut id)
-					if typ == ast.error_type_idx {
-						continue
-					}
-					id.info.typ = typ
-					node.defer_vars[i] = id
-				}
-			}
-			c.inside_defer = true
-			c.stmts(mut node.stmts)
-			c.inside_defer = false
-		}
-		ast.EnumDecl {
-			c.enum_decl(mut node)
-		}
 		ast.ExprStmt {
 			node.typ = c.expr(mut node.expr)
 			c.expected_type = ast.void_type
@@ -2217,6 +2269,57 @@ fn (mut c Checker) stmt(mut node ast.Stmt) {
 			}
 			// TODO: This should work, even if it's prolly useless .-.
 			// node.typ = c.check_expr_option_or_result_call(node.expr, ast.void_type)
+		}
+		ast.AssignStmt {
+			c.assign_stmt(mut node)
+		}
+		ast.Block {
+			c.block(mut node)
+		}
+		ast.BranchStmt {
+			c.branch_stmt(node)
+		}
+		ast.ComptimeFor {
+			c.comptime_for(mut node)
+		}
+		ast.ConstDecl {
+			c.inside_const = true
+			c.const_decl(mut node)
+			c.inside_const = false
+		}
+		ast.DeferStmt {
+			c.inside_defer = true
+			if node.idx_in_fn < 0 && c.table.cur_fn != unsafe { nil } {
+				node.idx_in_fn = c.table.cur_fn.defer_stmts.len
+				c.table.cur_fn.defer_stmts << unsafe { &node }
+			}
+			if c.locked_names.len != 0 || c.rlocked_names.len != 0 {
+				c.error('defers are not allowed in lock statements', node.pos)
+			}
+			for i, ident in node.defer_vars {
+				mut id := ident
+				if mut id.info is ast.IdentVar {
+					if id.comptime && (id.tok_kind == .question
+						|| id.name in ast.valid_comptime_not_user_defined) {
+						node.defer_vars[i] = ast.Ident{
+							scope: unsafe { nil }
+							name:  ''
+						}
+						continue
+					}
+					typ := c.ident(mut id)
+					if typ == ast.error_type_idx {
+						continue
+					}
+					id.info.typ = typ
+					node.defer_vars[i] = id
+				}
+			}
+			c.stmts(mut node.stmts)
+			c.inside_defer = false
+		}
+		ast.EnumDecl {
+			c.enum_decl(mut node)
 		}
 		ast.FnDecl {
 			c.fn_decl(mut node)
@@ -2267,15 +2370,35 @@ fn (mut c Checker) stmt(mut node ast.Stmt) {
 			c.struct_decl(mut node)
 		}
 		ast.TypeDecl {
-			c.type_decl(node)
+			c.type_decl(mut node)
+		}
+		ast.EmptyStmt {
+			if c.pref.is_verbose {
+				eprintln('Checker.stmt() EmptyStmt')
+				print_backtrace()
+			}
+		}
+		ast.NodeError {}
+		ast.DebuggerStmt {
+			c.table.used_features.debugger = true
+		}
+		ast.AsmStmt {
+			c.asm_stmt(mut node)
+		}
+		ast.AssertStmt {
+			c.assert_stmt(mut node)
 		}
 	}
 }
 
 fn (mut c Checker) assert_stmt(mut node ast.AssertStmt) {
+	if node.is_used {
+		c.table.used_features.asserts = true
+	}
 	cur_exp_typ := c.expected_type
 	c.expected_type = ast.bool_type
 	assert_type := c.check_expr_option_or_result_call(node.expr, c.expr(mut node.expr))
+	c.markused_assertstmt_auto_str(mut node)
 	if assert_type != ast.bool_type_idx {
 		atype_name := c.table.sym(assert_type).name
 		c.error('assert can be used only with `bool` expressions, but found `${atype_name}` instead',
@@ -2391,9 +2514,6 @@ fn (mut c Checker) asm_stmt(mut stmt ast.AsmStmt) {
 	if c.pref.backend.is_js() {
 		c.error('inline assembly is not supported in the js backend', stmt.pos)
 	}
-	if c.pref.backend == .c && c.pref.ccompiler_type == .msvc {
-		c.error('msvc compiler does not support inline assembly', stmt.pos)
-	}
 	mut aliases := c.asm_ios(mut stmt.output, mut stmt.scope, true)
 	aliases2 := c.asm_ios(mut stmt.input, mut stmt.scope, false)
 	aliases << aliases2
@@ -2504,7 +2624,7 @@ fn (mut c Checker) hash_stmt(mut node ast.HashStmt) {
 		return
 	}
 	match node.kind {
-		'include', 'insert', 'preinclude' {
+		'include', 'insert', 'preinclude', 'postinclude' {
 			original_flag := node.main
 			mut flag := node.main
 			if flag.contains('@VROOT') {
@@ -2547,7 +2667,7 @@ fn (mut c Checker) hash_stmt(mut node ast.HashStmt) {
 				node.main = d
 			}
 			flag_no_comment := flag.all_before('//').trim_space()
-			if node.kind == 'include' || node.kind == 'preinclude' {
+			if node.kind in ['include', 'preinclude', 'postinclude'] {
 				if !((flag_no_comment.starts_with('"') && flag_no_comment.ends_with('"'))
 					|| (flag_no_comment.starts_with('<') && flag_no_comment.ends_with('>'))) {
 					c.error('including C files should use either `"header_file.h"` or `<header_file.h>` quoting',
@@ -2667,6 +2787,8 @@ fn (mut c Checker) hash_stmt(mut node ast.HashStmt) {
 fn (mut c Checker) import_stmt(node ast.Import) {
 	if node.mod == 'x.vweb' {
 		println('`x.vweb` is now `veb`. The module is no longer experimental. Simply `import veb` instead of `import x.vweb`.')
+	} else if node.mod == 'vweb' {
+		println('`vweb` has been deprecated. Please use the more stable and fast `veb` instead.')
 	}
 	c.check_valid_snake_case(node.alias, 'module alias', node.pos)
 	for sym in node.syms {
@@ -2732,10 +2854,8 @@ fn (mut c Checker) stmts_ending_with_expression(mut stmts []ast.Stmt, expected_o
 	c.stmt_level++
 	for i, mut stmt in stmts {
 		c.is_last_stmt = i == stmts.len - 1
-		if c.scope_returns {
-			if unreachable.line_nr == -1 {
-				unreachable = stmt.pos
-			}
+		if c.scope_returns && unreachable.line_nr == -1 {
+			unreachable = stmt.pos
 		}
 		prev_expected_or_type := c.expected_or_type
 		c.expected_or_type = expected_or_type
@@ -2799,6 +2919,9 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 		return ast.void_type
 	}
 	match mut node {
+		ast.IfExpr {
+			return c.if_expr(mut node)
+		}
 		ast.ComptimeType {
 			c.error('incorrect use of compile-time type', node.pos)
 		}
@@ -2839,6 +2962,23 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 			node.expr_type = c.expr(mut node.expr)
 			expr_type_sym := c.table.sym(node.expr_type)
 			type_sym := c.table.sym(c.unwrap_generic(node.typ))
+			if !c.is_builtin_mod {
+				c.table.used_features.as_cast = true
+			}
+			if mut node.expr is ast.Ident {
+				if mut node.expr.obj is ast.Var {
+					ident_typ := if node.expr.obj.smartcasts.len > 0 {
+						node.expr.obj.smartcasts.last()
+					} else {
+						node.expr.obj.typ
+					}
+					if !node.typ.has_flag(.option) && ident_typ.has_flag(.option)
+						&& node.expr.or_expr.kind == .absent {
+						c.error('variable `${node.expr.name}` is an Option, it must be unwrapped first',
+							node.expr.pos)
+					}
+				}
+			}
 			if expr_type_sym.kind == .sum_type {
 				c.ensure_type_exists(node.typ, node.pos)
 				if !c.table.sumtype_has_variant(c.unwrap_generic(node.expr_type), c.unwrap_generic(node.typ),
@@ -2920,14 +3060,16 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 			return c.concat_expr(mut node)
 		}
 		ast.DumpExpr {
+			c.table.used_features.dump = true
 			c.expected_type = ast.string_type
 			node.expr_type = c.expr(mut node.expr)
-
-			if c.comptime.inside_comptime_for && node.expr is ast.Ident {
-				if c.comptime.is_comptime_var(node.expr) {
-					node.expr_type = c.comptime.get_type(node.expr as ast.Ident)
-				} else if (node.expr as ast.Ident).name in c.comptime.type_map {
-					node.expr_type = c.comptime.type_map[(node.expr as ast.Ident).name]
+			c.markused_dumpexpr(mut node)
+			if c.comptime.inside_comptime_for && mut node.expr is ast.Ident {
+				if node.expr.ct_expr {
+					node.expr_type = c.type_resolver.get_type(node.expr as ast.Ident)
+				} else if (node.expr as ast.Ident).name in c.type_resolver.type_map {
+					node.expr_type = c.type_resolver.get_ct_type_or_default((node.expr as ast.Ident).name,
+						node.expr_type)
 				}
 			}
 			c.check_expr_option_or_result_call(node.expr, node.expr_type)
@@ -2975,9 +3117,6 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 		}
 		ast.Ident {
 			return c.ident(mut node)
-		}
-		ast.IfExpr {
-			return c.if_expr(mut node)
 		}
 		ast.IfGuardExpr {
 			old_inside_if_guard := c.inside_if_guard
@@ -3144,6 +3283,7 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 		ast.StructInit {
 			if node.unresolved {
 				mut expr_ := c.table.resolve_init(node, c.unwrap_generic(node.typ))
+				c.markused_used_maps(c.table.used_features.used_maps == 0 && expr_ is ast.MapInit)
 				return c.expr(mut expr_)
 			}
 			mut inited_fields := []string{}
@@ -3213,9 +3353,10 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 	c.inside_integer_literal_cast = old_inside_integer_literal_cast
 
 	if mut node.expr is ast.ComptimeSelector {
-		node.expr_type = c.comptime.get_comptime_selector_type(node.expr, node.expr_type)
+		node.expr_type = c.type_resolver.get_comptime_selector_type(node.expr, node.expr_type)
 	} else if node.expr is ast.Ident && c.comptime.is_comptime_variant_var(node.expr) {
-		node.expr_type = c.comptime.type_map['${c.comptime.comptime_for_variant_var}.typ']
+		node.expr_type = c.type_resolver.get_ct_type_or_default('${c.comptime.comptime_for_variant_var}.typ',
+			ast.void_type)
 	}
 	mut from_type := c.unwrap_generic(node.expr_type)
 	from_sym := c.table.sym(from_type)
@@ -3229,21 +3370,23 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		to_type
 	}
 	final_to_is_ptr := to_type.is_ptr() || final_to_type.is_ptr()
-
+	c.markused_castexpr(mut node, to_type, mut final_to_sym)
 	if to_type.has_flag(.result) {
 		c.error('casting to Result type is forbidden', node.pos)
 	}
 	c.check_any_type(to_type, to_sym, node.pos)
 
-	if (to_sym.is_number() && from_sym.name == 'JS.Number')
-		|| (to_sym.is_number() && from_sym.name == 'JS.BigInt')
-		|| (to_sym.is_string() && from_sym.name == 'JS.String')
-		|| (to_type.is_bool() && from_sym.name == 'JS.Boolean')
-		|| (from_type.is_bool() && to_sym.name == 'JS.Boolean')
-		|| (from_sym.is_number() && to_sym.name == 'JS.Number')
-		|| (from_sym.is_number() && to_sym.name == 'JS.BigInt')
-		|| (from_sym.is_string() && to_sym.name == 'JS.String') {
-		return to_type
+	if c.pref.backend.is_js() {
+		if (to_sym.is_number() && from_sym.name == 'JS.Number')
+			|| (to_sym.is_number() && from_sym.name == 'JS.BigInt')
+			|| (to_sym.is_string() && from_sym.name == 'JS.String')
+			|| (to_type.is_bool() && from_sym.name == 'JS.Boolean')
+			|| (from_type.is_bool() && to_sym.name == 'JS.Boolean')
+			|| (from_sym.is_number() && to_sym.name == 'JS.Number')
+			|| (from_sym.is_number() && to_sym.name == 'JS.BigInt')
+			|| (from_sym.is_string() && to_sym.name == 'JS.String') {
+			return to_type
+		}
 	}
 
 	if !c.expected_type.has_flag(.generic) && to_sym.name.len == 1
@@ -3280,8 +3423,7 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 			node.expr_type = c.promote_num(node.expr_type, xx)
 			from_type = node.expr_type
 		}
-		if !c.table.sumtype_has_variant(to_type, from_type, false) && !to_type.has_flag(.option)
-			&& !to_type.has_flag(.result) {
+		if !c.table.sumtype_has_variant(to_type, from_type, false) {
 			ft := c.table.type_to_str(from_type)
 			tt := c.table.type_to_str(to_type)
 			c.error('cannot cast `${ft}` to `${tt}`', node.pos)
@@ -3354,7 +3496,7 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 	} else if !from_type.has_option_or_result() && mut to_sym.info is ast.Interface {
 		if c.type_implements(from_type, to_type, node.pos) {
 			if !from_type.is_any_kind_of_pointer() && from_sym.kind != .interface
-				&& !c.inside_unsafe {
+				&& !c.inside_unsafe && !from_type.is_number() {
 				c.mark_as_referenced(mut &node.expr, true)
 			}
 			if to_sym.info.is_generic {
@@ -3440,12 +3582,22 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		tt := c.table.type_to_str(to_type)
 		c.error('cannot cast incompatible option ${final_to_sym.name} `${ft}` to `${tt}`',
 			node.pos)
-	}
-
-	if to_sym.kind == .rune && from_sym.is_string() {
+	} else if to_sym.kind == .rune && from_sym.is_string() {
 		snexpr := node.expr.str()
 		ft := c.table.type_to_str(from_type)
 		c.error('cannot cast `${ft}` to rune, use `${snexpr}.runes()` instead.', node.pos)
+	} else if !from_type.is_ptr() && from_type != ast.string_type
+		&& final_from_sym.info is ast.Struct && !final_from_sym.info.is_empty_struct()
+		&& (final_to_sym.is_int() || final_to_sym.is_float()) {
+		ft := c.table.type_to_str(from_type)
+		tt := c.table.type_to_str(to_type)
+		c.error('cannot cast type `${ft}` to `${tt}`', node.pos)
+	}
+
+	// T(0) where T is array or map
+	if node.typ.has_flag(.generic) && to_sym.kind in [.array, .map, .array_fixed]
+		&& node.expr.is_literal() {
+		c.error('cannot cast literal value to ${to_sym.name} type', node.pos)
 	}
 
 	if to_sym.kind == .enum && !(c.inside_unsafe || c.file.is_translated) && from_sym.is_int() {
@@ -3456,6 +3608,25 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		|| c.file.is_translated) && !c.check_matching_function_symbols(final_from_sym, final_to_sym) {
 		c.error('casting a function value from one function signature, to another function signature, should be done inside `unsafe{}` blocks',
 			node.pos)
+	} else if final_to_sym.kind == .function && final_from_sym.kind != .function {
+		if to_type.has_flag(.option) && node.expr !is ast.None {
+			c.error('casting number to Option function is not allowed, only compatible function or `none`',
+				node.pos)
+		} else if !(c.inside_unsafe || c.file.is_translated) {
+			if node.expr is ast.IntegerLiteral {
+				c.warn('casting number to function value should be done inside `unsafe{}` blocks',
+					node.pos)
+			} else if node.expr is ast.Nil {
+				c.warn('casting `nil` to function value should be done inside `unsafe{}` blocks',
+					node.pos)
+			} else if node.expr is ast.None {
+				if from_type.has_flag(.option) {
+					c.warn('cannot pass `none` to a non Option function type', node.pos)
+				}
+			} else if final_from_sym.kind != .voidptr {
+				c.error('invalid casting value to function', node.pos)
+			}
+		}
 	}
 	if to_type.is_ptr() && to_sym.kind == .alias && from_sym.kind == .map {
 		c.error('cannot cast to alias pointer `${c.table.type_to_str(to_type)}` because `${c.table.type_to_str(from_type)}` is a value',
@@ -3516,6 +3687,7 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		tt := c.table.type_to_str(to_type)
 		tsize, _ := c.table.type_size(to_type.idx_type())
 		bit_size := tsize * 8
+		signed := node.expr.val[0] == `-`
 		value_string := match node.expr.val[0] {
 			`-`, `+` {
 				node.expr.val[1..]
@@ -3524,16 +3696,63 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 				node.expr.val
 			}
 		}
-		_, e := strconv.common_parse_uint2(value_string, 0, bit_size)
+		mut is_overflowed := false
+		v, e := strconv.common_parse_uint2(value_string, 0, bit_size)
 		match e {
 			0 {}
 			-3 {
+				// FIXME: Once integer literal is considered as hard error, remove this warn and migrate to later error
 				c.error('value `${node.expr.val}` overflows `${tt}`', node.pos)
+				is_overflowed = true
 			}
 			else {
 				c.error('cannot cast value `${node.expr.val}` to `${tt}`', node.pos)
 			}
 		}
+
+		// checks if integer literal's most significant bit
+		// alters sign bit when casting to signed integer
+		if !is_overflowed && to_type.is_signed() {
+			signed_one := match to_type.idx() {
+				ast.char_type_idx, ast.i8_type_idx {
+					u64(0xff)
+				}
+				ast.i16_type_idx {
+					u64(0xffff)
+				}
+				ast.int_type_idx, ast.i32_type_idx {
+					u64(0xffffffff)
+				}
+				ast.i64_type_idx {
+					u64(0xffffffffffffffff)
+				}
+				ast.isize_type_idx {
+					$if x64 {
+						u64(0xffffffffffffffff)
+					} $else {
+						u64(0xffffffff)
+					}
+				}
+				else {
+					c.error('ICE: Not a valid signed type', node.pos)
+					0
+				}
+			}
+			max_signed := (u64(1) << (bit_size - 1)) - 1
+
+			is_overflowed = v == signed_one || (signed && v - 2 == max_signed)
+				|| (!signed && v - 1 == max_signed)
+			// FIXME: Once integer literal is considered as hard error, remove this warn and migrate to later error
+			if is_overflowed {
+				c.warn('value `${node.expr.val}` overflows `${tt}`, this will be considered hard error soon',
+					node.pos)
+			}
+		}
+
+		// FIXME: Once integer literal is considered as hard error, uncomment this
+		// if is_overflowed {
+		// 	c.error('value `${node.expr.val}` overflows `${tt}`', node.pos)
+		// }
 	} else if to_type.is_float() && mut node.expr is ast.FloatLiteral {
 		tt := c.table.type_to_str(to_type)
 		strconv.atof64(node.expr.val) or {
@@ -3548,6 +3767,16 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		kind_name := if from_sym.kind == .sum_type { 'sum type' } else { 'interface' }
 		c.error('cannot cast `${ft}` ${kind_name} value to `${tt}`, use `${node.expr} as ${tt}` instead',
 			node.pos)
+	}
+	if from_sym.language == .v && from_type.is_ptr() && !to_type.is_ptr() && !final_to_type.is_ptr()
+		&& !node.expr.is_auto_deref_var() && final_to_sym.kind == .struct
+		&& final_from_sym.kind == .struct {
+		if c.check_struct_signature(final_from_sym.info as ast.Struct, final_to_sym.info as ast.Struct) {
+			ft := c.table.type_to_str(from_type)
+			tt := c.table.type_to_str(to_type)
+			c.error('cannot cast `${ft}` to `${tt}`, you must dereference it first (e.g. ${tt}(*var))',
+				node.pos)
+		}
 	}
 
 	if node.has_arg {
@@ -3740,11 +3969,6 @@ fn (mut c Checker) at_expr(mut node ast.AtExpr) ast.Type {
 	return ast.string_type
 }
 
-struct ACFieldMethod {
-	name string
-	typ  string
-}
-
 fn (mut c Checker) resolve_var_fn(func &ast.Fn, mut node ast.Ident, name string) ast.Type {
 	mut fn_type := ast.new_type(c.table.find_or_register_fn_type(func, false, true))
 	if func.generic_names.len > 0 {
@@ -3806,10 +4030,10 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 	// second use
 	if node.kind in [.constant, .global, .variable] {
 		info := node.info as ast.IdentVar
-		typ := c.comptime.get_type_or_default(node, info.typ)
+		typ := c.type_resolver.get_type_or_default(node, info.typ)
 		// Got a var with type T, return current generic type
 		if node.or_expr.kind != .absent {
-			if !typ.has_flag(.option) {
+			if !info.typ.has_flag(.option) {
 				if node.or_expr.kind == .propagate_option {
 					c.error('cannot use `?` on non-option variable', node.pos)
 				} else if node.or_expr.kind == .block {
@@ -3844,6 +4068,7 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 			c.error('`mut` is not allowed with `=` (use `:=` to declare a variable)',
 				node.pos)
 		}
+		c.markused_external_type(!c.is_builtin_mod && node.language == .v && node.name.contains('.'))
 		if mut obj := node.scope.find(node.name) {
 			match mut obj {
 				ast.GlobalField {
@@ -3917,6 +4142,7 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 						obj.typ = typ
 					}
 					node.obj = obj
+					node.ct_expr = obj.ct_type_var != .no_comptime
 					// unwrap option (`println(x)`)
 					if is_option {
 						if node.or_expr.kind == .absent {
@@ -4007,6 +4233,17 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 			if func.generic_names.len > 0 {
 				if node.concrete_types.len == 0 {
 					c.error('`${node.name}` is a generic fn, you should pass its concrete types, e.g. ${node.name}[int]',
+						node.pos)
+				}
+				mut has_generic := false // foo[T] instead of foo[int]
+				for concrete_type in node.concrete_types {
+					if concrete_type.has_flag(.generic) {
+						has_generic = true
+					}
+				}
+				if c.table.cur_fn != unsafe { nil } && c.table.cur_concrete_types.len == 0
+					&& has_generic && c.table.sym(c.expected_type).kind != .function {
+					c.error('a generic fn with generic types, cannot be used outside of another generic fn',
 						node.pos)
 				}
 			}
@@ -4122,7 +4359,7 @@ fn (mut c Checker) concat_expr(mut node ast.ConcatExpr) ast.Type {
 
 // smartcast takes the expression with the current type which should be smartcasted to the target type in the given scope
 fn (mut c Checker) smartcast(mut expr ast.Expr, cur_type ast.Type, to_type_ ast.Type, mut scope ast.Scope,
-	is_comptime bool) {
+	is_comptime bool, is_option_unwrap bool) {
 	sym := c.table.sym(cur_type)
 	to_type := if sym.kind == .interface && c.table.sym(to_type_).kind != .interface {
 		to_type_.ref()
@@ -4134,7 +4371,7 @@ fn (mut c Checker) smartcast(mut expr ast.Expr, cur_type ast.Type, to_type_ ast.
 			mut is_mut := false
 			mut smartcasts := []ast.Type{}
 			expr_sym := c.table.sym(expr.expr_type)
-			mut orig_type := 0
+			mut orig_type := ast.no_type
 			if field := c.table.find_field(expr_sym, expr.field_name) {
 				if field.is_mut {
 					if root_ident := expr.root_ident() {
@@ -4147,13 +4384,15 @@ fn (mut c Checker) smartcast(mut expr ast.Expr, cur_type ast.Type, to_type_ ast.
 					orig_type = field.typ
 				}
 			}
-			if field := scope.find_struct_field(expr.expr.str(), expr.expr_type, expr.field_name) {
+			expr_str := expr.expr.str()
+			field := scope.find_struct_field(expr_str, expr.expr_type, expr.field_name)
+			if field != unsafe { nil } {
 				smartcasts << field.smartcasts
 			}
 			// smartcast either if the value is immutable or if the mut argument is explicitly given
-			if !is_mut || expr.is_mut {
+			if !is_mut || expr.is_mut || is_option_unwrap || orig_type.has_flag(.option) {
 				smartcasts << to_type
-				scope.register_struct_field(expr.expr.str(), ast.ScopeStructField{
+				scope.register_struct_field(expr_str, ast.ScopeStructField{
 					struct_type: expr.expr_type
 					name:        expr.field_name
 					typ:         cur_type
@@ -4172,7 +4411,9 @@ fn (mut c Checker) smartcast(mut expr ast.Expr, cur_type ast.Type, to_type_ ast.
 			mut orig_type := 0
 			mut is_inherited := false
 			mut ct_type_var := ast.ComptimeVarKind.no_comptime
+			mut is_ct_type_unwrapped := false
 			if mut expr.obj is ast.Var {
+				is_ct_type_unwrapped = expr.obj.ct_type_var != ast.ComptimeVarKind.no_comptime
 				is_mut = expr.obj.is_mut
 				smartcasts << expr.obj.smartcasts
 				is_already_casted = expr.obj.pos.pos == expr.pos.pos
@@ -4182,28 +4423,31 @@ fn (mut c Checker) smartcast(mut expr ast.Expr, cur_type ast.Type, to_type_ ast.
 				is_inherited = expr.obj.is_inherited
 				ct_type_var = if is_comptime {
 					.smartcast
+				} else if c.table.type_kind(to_type_) == .aggregate {
+					.aggregate
 				} else {
 					.no_comptime
 				}
 			}
 			// smartcast either if the value is immutable or if the mut argument is explicitly given
-			if (!is_mut || expr.is_mut) && !is_already_casted {
+			if (!is_mut || expr.is_mut || is_option_unwrap) && !is_already_casted {
 				smartcasts << to_type
 				if var := scope.find_var(expr.name) {
 					if is_comptime && var.ct_type_var == .smartcast {
 						if cur_type.has_flag(.option) && !to_type.has_flag(.option) {
 							if !var.is_unwrapped {
 								scope.register(ast.Var{
-									name:         expr.name
-									typ:          cur_type
-									pos:          expr.pos
-									is_used:      true
-									is_mut:       expr.is_mut
-									is_inherited: is_inherited
-									smartcasts:   [to_type]
-									orig_type:    orig_type
-									ct_type_var:  ct_type_var
-									is_unwrapped: true
+									name:              expr.name
+									typ:               cur_type
+									pos:               expr.pos
+									is_used:           true
+									is_mut:            expr.is_mut
+									is_inherited:      is_inherited
+									smartcasts:        [to_type]
+									orig_type:         orig_type
+									ct_type_var:       ct_type_var
+									ct_type_unwrapped: is_ct_type_unwrapped
+									is_unwrapped:      true
 								})
 							} else {
 								scope.update_smartcasts(expr.name, to_type, true)
@@ -4215,15 +4459,17 @@ fn (mut c Checker) smartcast(mut expr ast.Expr, cur_type ast.Type, to_type_ ast.
 					}
 				}
 				scope.register(ast.Var{
-					name:         expr.name
-					typ:          cur_type
-					pos:          expr.pos
-					is_used:      true
-					is_mut:       expr.is_mut
-					is_inherited: is_inherited
-					smartcasts:   smartcasts
-					orig_type:    orig_type
-					ct_type_var:  ct_type_var
+					name:              expr.name
+					typ:               cur_type
+					pos:               expr.pos
+					is_used:           true
+					is_mut:            expr.is_mut
+					is_inherited:      is_inherited
+					is_unwrapped:      is_option_unwrap
+					smartcasts:        smartcasts
+					orig_type:         orig_type
+					ct_type_var:       ct_type_var
+					ct_type_unwrapped: is_ct_type_unwrapped
 				})
 			} else if is_mut && !expr.is_mut {
 				c.smartcast_mut_pos = expr.pos
@@ -4491,6 +4737,11 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 	right_type := c.expr(mut node.right)
 	c.inside_ref_lit = old_inside_ref_lit
 	node.right_type = right_type
+	mut expr := node.right
+	// if ParExpr get the innermost expr
+	for mut expr is ast.ParExpr {
+		expr = expr.expr
+	}
 	if node.op == .amp {
 		if node.right is ast.Nil {
 			c.error('invalid operation: cannot take address of nil', node.right.pos())
@@ -4498,6 +4749,10 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 		if mut node.right is ast.PrefixExpr {
 			if node.right.op == .amp {
 				c.error('unexpected `&`, expecting expression', node.right.pos)
+			}
+		} else if mut expr is ast.PrefixExpr {
+			if expr.op == .amp {
+				c.error('cannot take the address of this expression', expr.pos)
 			}
 		} else if mut node.right is ast.SelectorExpr {
 			if node.right.expr.is_literal() {
@@ -4524,11 +4779,6 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 	// TODO: testing ref/deref strategy
 	right_is_ptr := right_type.is_ptr()
 	if node.op == .amp && (!right_is_ptr || (right_is_ptr && node.right is ast.CallExpr)) {
-		mut expr := node.right
-		// if ParExpr get the innermost expr
-		for mut expr is ast.ParExpr {
-			expr = expr.expr
-		}
 		if expr in [ast.BoolLiteral, ast.CallExpr, ast.CharLiteral, ast.FloatLiteral, ast.IntegerLiteral,
 			ast.InfixExpr, ast.StringLiteral, ast.StringInterLiteral] {
 			c.error('cannot take the address of ${expr}', node.pos)
@@ -4705,10 +4955,21 @@ fn (mut c Checker) index_expr(mut node ast.IndexExpr) ast.Type {
 			unwrapped_sym := c.table.final_sym(unwrapped_typ)
 			if unwrapped_sym.kind in [.map, .array, .array_fixed] {
 				typ = unwrapped_typ
-				typ_sym = unwrapped_sym
+				typ_sym = unsafe { unwrapped_sym }
+			}
+		}
+		.string {
+			if node.is_gated && c.mod != 'strings' {
+				c.table.used_features.range_index = true
 			}
 		}
 		else {}
+	}
+	if !c.is_builtin_mod && c.mod !in ['strings', 'math.bits'] {
+		if node.index is ast.RangeExpr {
+			c.table.used_features.range_index = true
+		}
+		c.table.used_features.index = true
 	}
 	is_aggregate_arr := typ_sym.kind == .aggregate
 		&& (typ_sym.info as ast.Aggregate).types.filter(c.table.type_kind(it) !in [.array, .array_fixed, .string, .map]).len == 0
@@ -4728,6 +4989,9 @@ fn (mut c Checker) index_expr(mut node ast.IndexExpr) ast.Type {
 				node.left.pos())
 		} else if node.left is ast.CallExpr {
 			c.error('type `?${typ_sym.name}` is an Option, it must be unwrapped with `func()?`, or use `func() or {default}`',
+				node.left.pos())
+		} else if node.left is ast.SelectorExpr && node.left.or_block.kind == .absent {
+			c.error('type `?${typ_sym.name}` is an Option, it must be unwrapped first; use `${node.left}?` to do it',
 				node.left.pos())
 		}
 	} else if typ.has_flag(.result) {
@@ -5139,10 +5403,27 @@ fn (mut c Checker) ensure_type_exists(typ ast.Type, pos token.Pos) bool {
 		return false
 	}
 	sym := c.table.sym(typ)
-	if !c.is_builtin_mod && sym.kind == .struct && !sym.is_pub && sym.mod != c.mod {
-		c.error('struct `${sym.name}` was declared as private to module `${sym.mod}`, so it can not be used inside module `${c.mod}`',
-			pos)
-		return false
+	if !c.is_builtin_mod && !sym.is_pub && sym.mod != c.mod && sym.mod != 'main' {
+		if sym.kind == .function {
+			fn_info := sym.info as ast.FnType
+			// hack: recover fn mod from func name
+			mut fn_mod := sym.mod
+			if fn_mod == '' {
+				fn_mod = fn_info.func.name.all_before_last('.')
+				if fn_mod == fn_info.func.name {
+					fn_mod = 'builtin'
+				}
+			}
+			if fn_mod != '' && fn_mod != c.mod && fn_info.func.name != '' && !fn_info.is_anon {
+				c.error('function type `${fn_info.func.name}` was declared as private to module `${fn_mod}`, so it can not be used inside module `${c.mod}`',
+					pos)
+				return false
+			}
+		} else if sym.mod != '' {
+			c.error('${sym.kind} `${sym.name}` was declared as private to module `${sym.mod}`, so it can not be used inside module `${c.mod}`',
+				pos)
+			return false
+		}
 	}
 	match sym.kind {
 		.placeholder {
@@ -5218,6 +5499,16 @@ fn (mut c Checker) ensure_type_exists(typ ast.Type, pos token.Pos) bool {
 				}
 			}
 		}
+		.chan {
+			if sym.info is ast.Chan {
+				if !c.ensure_type_exists((sym.info as ast.Chan).elem_type, token.Pos{
+					...pos
+					col: pos.col + 5
+				}) {
+					return false
+				}
+			}
+		}
 		else {}
 	}
 	return true
@@ -5273,6 +5564,9 @@ fn (mut c Checker) fail_if_unreadable(expr ast.Expr, typ ast.Type, what string) 
 			if c.fail_if_unreadable(expr.left, expr.left_type, what) {
 				return true
 			}
+			if typ.has_flag(.shared_f) && expr.left is ast.SelectorExpr {
+				return false
+			}
 		}
 		ast.InfixExpr {
 			pos = expr.left.pos().extend(expr.pos)
@@ -5305,6 +5599,11 @@ fn (mut c Checker) fail_if_stack_struct_action_outside_unsafe(mut ident ast.Iden
 			sym := c.table.sym(obj.typ.set_nr_muls(0))
 			is_heap := sym.is_heap()
 			if (!is_heap || !obj.typ.is_ptr()) && !c.pref.translated && !c.file.is_translated {
+				is_mut_param := c.table.cur_fn != unsafe { nil }
+					&& c.table.cur_fn.params.filter(it.name == ident.name && it.is_mut).len > 0
+				if is_mut_param {
+					return
+				}
 				suggestion := if !is_heap && sym.kind == .struct {
 					'declaring `${sym.name}` as `@[heap]`'
 				} else if !is_heap {
@@ -5375,4 +5674,35 @@ fn (c &Checker) check_import_sym_conflict(ident string) bool {
 		}
 	}
 	return false
+}
+
+// update_unresolved_fixed_sizes updates the unresolved type symbols for array fixed return type and alias type
+pub fn (mut c Checker) update_unresolved_fixed_sizes() {
+	for mut stmt in c.unresolved_fixed_sizes {
+		if mut stmt is ast.FnDecl { // return types
+			ret_sym := c.table.sym(stmt.return_type)
+			if ret_sym.info is ast.ArrayFixed && c.array_fixed_has_unresolved_size(ret_sym.info) {
+				mut size_expr := ret_sym.info.size_expr
+				stmt.return_type = c.eval_array_fixed_sizes(mut size_expr, 0, ret_sym.info.elem_type)
+			}
+		} else if mut stmt is ast.TypeDecl { // alias
+			mut alias_decl := stmt
+			if mut alias_decl is ast.AliasTypeDecl {
+				alias_sym := c.table.sym(alias_decl.parent_type)
+				if alias_sym.info is ast.ArrayFixed
+					&& c.array_fixed_has_unresolved_size(alias_sym.info) {
+					mut size_expr := alias_sym.info.size_expr
+					alias_decl.parent_type = c.eval_array_fixed_sizes(mut size_expr, 0,
+						alias_sym.info.elem_type)
+
+					// overwriting current alias type
+					mut typ_sym := c.table.type_symbols[alias_decl.typ.idx()]
+					typ_sym.parent_idx = alias_decl.parent_type.idx()
+					if mut typ_sym.info is ast.Alias {
+						typ_sym.info.parent_type = alias_decl.parent_type
+					}
+				}
+			}
+		}
+	}
 }
