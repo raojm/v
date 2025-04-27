@@ -153,6 +153,7 @@ mut:
 	inside_cast_in_heap       int // inside cast to interface type in heap (resolve recursive calls)
 	inside_cast               bool
 	inside_selector           bool
+	inside_selector_deref     bool // indicates if the inside selector was already dereferenced
 	inside_memset             bool
 	inside_const              bool
 	inside_array_item         bool
@@ -3149,7 +3150,7 @@ fn (mut g Gen) asm_stmt(stmt ast.AsmStmt) {
 		}
 		// swap destination and operands for att syntax, not for arm64
 		if template.args.len != 0 && !template.is_directive && stmt.arch != .arm64
-			&& stmt.arch != .s390x {
+			&& stmt.arch != .s390x && stmt.arch != .ppc64le {
 			template.args.prepend(template.args.last())
 			template.args.delete(template.args.len - 1)
 		}
@@ -3226,7 +3227,7 @@ fn (mut g Gen) asm_arg(arg ast.AsmArg, stmt ast.AsmStmt) {
 		ast.IntegerLiteral {
 			if stmt.arch == .arm64 {
 				g.write('#${arg.val}')
-			} else if stmt.arch == .s390x {
+			} else if stmt.arch == .s390x || stmt.arch == .ppc64le {
 				g.write('${arg.val}')
 			} else {
 				g.write('\$${arg.val}')
@@ -4146,11 +4147,13 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
 	mut field_typ := ast.void_type
 	mut is_option_unwrap := false
 	is_iface_or_sumtype := sym.kind in [.interface, .sum_type]
+	mut deref_count := 0
 	if f := g.table.find_field_with_embeds(sym, node.field_name) {
 		field_sym := g.table.sym(f.typ)
 		field_typ = f.typ
 		if is_iface_or_sumtype {
 			g.write('(*(')
+			deref_count++
 		}
 		is_option := field_typ.has_flag(.option)
 		if field_sym.kind in [.sum_type, .interface] || is_option {
@@ -4167,15 +4170,16 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
 					}
 					if nested_unwrap && field_sym.kind == .sum_type {
 						g.write('*(')
+						deref_count++
 					}
 					for i, typ in field.smartcasts {
 						if i == 0 && (is_option_unwrap || nested_unwrap) {
 							deref := if g.inside_selector {
 								if is_iface_or_sumtype || (field.orig_type.is_ptr() && g.left_is_opt
 									&& is_option_unwrap) {
-									'*'.repeat(field.smartcasts.last().nr_muls())
+									'*'.repeat(typ.nr_muls())
 								} else {
-									'*'.repeat(field.smartcasts.last().nr_muls() + 1)
+									'*'.repeat(typ.nr_muls() + 1)
 								}
 							} else if sym.kind == .interface && !typ.is_ptr()
 								&& field.orig_type.has_flag(.option) {
@@ -4183,6 +4187,8 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
 							} else {
 								'*'
 							}
+							deref_count += deref.len
+							g.inside_selector_deref = deref_count > typ.nr_muls()
 							g.write('(${deref}(${g.styp(typ)}*)')
 						}
 						if i == 0 || !nested_unwrap {
@@ -4289,6 +4295,7 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
 		g.write('((${g.base_type(field_typ)})')
 	}
 	old_inside_selector := g.inside_selector
+	old_inside_selector_deref := g.inside_selector_deref
 	g.inside_selector = node.expr is ast.SelectorExpr && node.expr.expr is ast.Ident
 	n_ptr := node.expr_type.nr_muls() - 1
 	if n_ptr > 0 {
@@ -4298,7 +4305,9 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
 	} else {
 		g.expr(node.expr)
 	}
+	mut opt_ptr_already_deref := g.inside_selector_deref
 	g.inside_selector = old_inside_selector
+	g.inside_selector_deref = old_inside_selector_deref
 	if field_is_opt {
 		g.write(')')
 	}
@@ -4350,6 +4359,7 @@ fn (mut g Gen) selector_expr(node ast.SelectorExpr) {
 		|| (((!is_dereferenced && unwrapped_expr_type.is_ptr()) || sym.kind == .chan
 		|| alias_to_ptr) && node.from_embed_types.len == 0)
 		|| (node.expr.is_as_cast() && g.inside_smartcast)
+		|| (!opt_ptr_already_deref && unwrapped_expr_type.is_ptr())
 	if !has_embed && left_is_ptr {
 		g.write('->')
 	} else {
@@ -5930,6 +5940,9 @@ fn (mut g Gen) return_stmt(node ast.Return) {
 				line := g.go_before_last_stmt().trim_space()
 				expr_styp := g.styp(node.types[i])
 				g.write('memcpy(&${tmpvar}.arg${arg_idx}, ')
+				if expr is ast.StructInit {
+					g.write('(${expr_styp})')
+				}
 				g.expr(expr)
 				g.writeln(', sizeof(${expr_styp}));')
 				final_assignments += g.go_before_last_stmt() + '\t'
