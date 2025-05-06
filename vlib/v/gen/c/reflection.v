@@ -81,7 +81,10 @@ fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
 	arg_str += '.args=${g.gen_functionarg_array(cprefix + 'FunctionArg', node)},'
 	arg_str += '.attrs=${g.gen_functionattr_array(cprefix + 'FnAttr', node)},'
 
-	if !node.is_conditional && node.source_fn != 0 && 0 == node.generic_names.len && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with('${node.mod}.') {
+	fkey := node.fkey()
+	is_used_by_main := g.table.used_features.used_fns[fkey]
+
+	if is_used_by_main && !node.is_conditional && node.source_fn != 0 && 0 == node.generic_names.len && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with('${node.mod}.') {
 		arg_str += '.fnptr=&${c_fn_name(node.name)},'
 	}
 	arg_str += '.file_idx=${g.reflection_string(util.cescaped_path(node.file))},'
