@@ -66,7 +66,7 @@ fn (g Gen) gen_functionattr_array(type_name string, node ast.Fn) string {
 	}
 	mut out := 'new_array_from_c_array(${node.attrs.len},${node.attrs.len},sizeof(${type_name}),'
 	out += '_MOV((${type_name}[${node.attrs.len}]){'
-	out += node.attrs.map('((${type_name}){.name=_SLIT("${it.name}"),.arg=_SLIT("${it.arg}"),.has_arg=${it.has_arg}})').join(',')
+	out += node.attrs.map('((${type_name}){.name=_S("${it.name}"),.arg=_S("${it.arg}"),.has_arg=${it.has_arg}})').join(',')
 	out += '}))'
 	return out
 }
