@@ -225,6 +225,7 @@ fn create_tree() ! {
 	os.mkdir_all('myfolder/a1/a2/a3', mode: 0o700)!
 	f3 := os.real_path('myfolder/f1/f2/f3')
 	assert os.is_dir(f3)
+	create_file('myfolder/f1/f2/f3/.hfile1')!
 	create_file('myfolder/f1/f2/f3/a.txt')!
 	create_file('myfolder/f1/f2/f3/b.txt')!
 	create_file('myfolder/f1/f2/f3/c.txt')!
@@ -235,6 +236,7 @@ fn create_tree() ! {
 	create_file('myfolder/a1/a2/a3/y.txt')!
 	create_file('myfolder/a1/a2/a3/z.txt')!
 	create_file('myfolder/a1/1.txt')!
+	create_file('myfolder/a1/.hfile2')!
 	create_file('myfolder/xyz.ini')!
 }
 
@@ -274,6 +276,11 @@ fn test_walk_ext() {
 	]
 	mut mds := normalise_paths(os.walk_ext('myfolder', '.md'))
 	assert mds == ['myfolder/another.md', 'myfolder/f1/f2/f3/d.md']
+
+	all_with_hidden := os.walk_ext('.', '', hidden: true)
+	assert all_with_hidden.len > all.len
+	hidden := normalise_paths(all_with_hidden.filter(it !in all))
+	assert hidden == ['./myfolder/a1/.hfile2', './myfolder/f1/f2/f3/.hfile1']
 }
 
 fn test_walk_with_context() {
@@ -965,6 +972,16 @@ fn test_execute_with_linefeeds() {
 	assert result.exit_code == 0
 	result2 := os.execute('false\n')
 	assert result2.exit_code == 1
+}
+
+fn test_execute_fc_get_output() {
+	if os.user_os() != 'windows' {
+		return
+	}
+	result := os.execute('c:\\windows\\system32\\fc.exe /?')
+	dump(result)
+	assert result.output.contains('filename')
+	assert result.exit_code == -1
 }
 
 fn test_command() {

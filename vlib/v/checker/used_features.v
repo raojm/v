@@ -138,6 +138,16 @@ fn (mut c Checker) markused_fn_call(mut node ast.CallExpr) {
 				c.table.used_features.option_or_result = true
 			}
 			c.table.used_features.print_types[node.args[0].typ.idx()] = true
+			if !c.table.used_features.auto_str_ptr && node.args[0].expr is ast.Ident {
+				var_obj := node.args[0].expr.obj
+				if var_obj is ast.Var {
+					if var_obj.orig_type != 0
+						&& c.table.final_sym(var_obj.orig_type).kind == .interface {
+						c.table.used_features.auto_str_ptr = true
+						return
+					}
+				}
+			}
 		}
 		if node.args[0].typ.is_ptr() {
 			c.table.used_features.auto_str_ptr = true
@@ -151,7 +161,11 @@ fn (mut c Checker) markused_method_call(mut node ast.CallExpr, mut left_expr ast
 			c.table.used_features.comptime_calls['${int(left_type)}.${node.name}'] = true
 		}
 	} else if left_type.has_flag(.generic) {
-		c.table.used_features.comptime_calls['${int(c.unwrap_generic(left_type))}.${node.name}'] = true
+		unwrapped_left := c.unwrap_generic(left_type)
+		c.table.used_features.comptime_calls['${int(unwrapped_left)}.${node.name}'] = true
+		if !unwrapped_left.is_ptr() && left_expr is ast.Ident && left_expr.is_mut() {
+			c.table.used_features.comptime_calls['${int(unwrapped_left.ref())}.${node.name}'] = true
+		}
 	}
 }
 

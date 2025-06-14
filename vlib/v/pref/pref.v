@@ -87,11 +87,12 @@ pub const supported_test_runners = ['normal', 'simple', 'tap', 'dump', 'teamcity
 @[heap; minify]
 pub struct Preferences {
 pub mut:
-	os          OS // the OS to compile for
-	backend     Backend
-	build_mode  BuildMode
-	arch        Arch
-	output_mode OutputMode = .stdout
+	os                  OS // the OS to compile for
+	backend             Backend
+	backend_set_by_flag bool // true when the compiler receives `-b`/`-backend`
+	build_mode          BuildMode
+	arch                Arch
+	output_mode         OutputMode = .stdout
 	// verbosity           VerboseLevel
 	is_verbose bool
 	// nofmt            bool   // disable vfmt
@@ -254,6 +255,7 @@ pub mut:
 	relaxed_gcc14 bool = true // turn on the generated pragmas, that make gcc versions > 14 a lot less pedantic. The default is to have those pragmas in the generated C output, so that gcc-14 can be used on Arch etc.
 	//
 	subsystem Subsystem // the type of the window app, that is going to be generated; has no effect on !windows
+	is_vls    bool
 }
 
 pub struct LineInfo {
@@ -919,6 +921,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 					res.output_cross_c = true
 				}
 				res.backend = b
+				res.backend_set_by_flag = true
 				i++
 			}
 			'-es5' {
@@ -987,7 +990,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 						dyld_fallback_paths := os.getenv('DYLD_FALLBACK_LIBRARY_PATH')
 						so_dir := os.dir(so_path)
 						if !dyld_fallback_paths.contains(so_dir) {
-							env := [dyld_fallback_paths, so_dir].filter(it.len).join(':')
+							env := [dyld_fallback_paths, so_dir].filter(it.len != 0).join(':')
 							os.setenv('DYLD_FALLBACK_LIBRARY_PATH', env, true)
 						}
 					}
@@ -1051,7 +1054,7 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 	res.show_asserts = res.show_asserts || res.is_stats || os.getenv('VTEST_SHOW_ASSERTS') != ''
 
 	if res.os != .wasm32_emscripten {
-		if res.out_name.ends_with('.js') {
+		if res.out_name.ends_with('.js') && !res.backend_set_by_flag {
 			res.backend = .js_node
 			res.output_cross_c = true
 		}

@@ -53,6 +53,7 @@ pub enum Language {
 	rv32  // 32-bit risc-v
 	s390x
 	ppc64le
+	loongarch64
 	wasm32
 }
 
@@ -82,6 +83,9 @@ pub fn pref_arch_to_table_language(pref_arch pref.Arch) Language {
 		}
 		.ppc64le {
 			.ppc64le
+		}
+		.loongarch64 {
+			.loongarch64
 		}
 		.js_node, .js_browser, .js_freestanding {
 			.js
@@ -124,12 +128,13 @@ pub mut:
 
 // max of 8
 pub enum TypeFlag as u32 {
-	option   = 1 << 24
-	result   = 1 << 25
-	variadic = 1 << 26
-	generic  = 1 << 27
-	shared_f = 1 << 28
-	atomic_f = 1 << 29
+	option             = 1 << 24
+	result             = 1 << 25
+	variadic           = 1 << 26
+	generic            = 1 << 27
+	shared_f           = 1 << 28
+	atomic_f           = 1 << 29
+	option_mut_param_t = 1 << 30
 }
 
 /*

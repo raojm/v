@@ -89,6 +89,7 @@ pub mut:
 	inside_fn_arg               bool        // `a`, `b` in `a.f(b)`
 	inside_ct_attr              bool        // true inside `[if expr]`
 	inside_x_is_type            bool        // true inside the Type expression of `if x is Type {`
+	inside_x_matches_type       bool        // true inside the match branch of `match x.type { Type {} }`
 	anon_struct_should_be_mut   bool        // true when `mut var := struct { ... }` is used
 	inside_generic_struct_init  bool
 	inside_integer_literal_cast bool // true inside `int(123)`
@@ -147,6 +148,8 @@ mut:
 
 	v_current_commit_hash string // same as old C.V_CURRENT_COMMIT_HASH
 	assign_stmt_attr      string // for `x := [1,2,3] @[freed]`
+
+	js_string ast.Type = ast.void_type // when `js"string literal"` is used, `js_string` will be equal to `JS.String`
 }
 
 pub fn new_checker(table &ast.Table, pref_ &pref.Preferences) &Checker {
@@ -192,6 +195,7 @@ fn (mut c Checker) reset_checker_state_at_start_of_new_file() {
 	c.inside_fn_arg = false
 	c.inside_ct_attr = false
 	c.inside_x_is_type = false
+	c.inside_x_matches_type = false
 	c.inside_integer_literal_cast = false
 	c.skip_flags = false
 	c.fn_level = 0
@@ -237,16 +241,21 @@ pub fn (mut c Checker) check(mut ast_file ast.File) {
 					sym.pos)
 			}
 		}
+
+		cmp_mod_name := if ast_import.mod != ast_import.alias && ast_import.alias != '_' {
+			ast_import.alias
+		} else {
+			ast_import.mod
+		}
 		for j in 0 .. i {
-			if ast_import.mod == ast_file.imports[j].mod {
-				c.error('`${ast_import.mod}` was already imported on line ${
-					ast_file.imports[j].mod_pos.line_nr + 1}', ast_import.mod_pos)
-			} else if ast_import.mod == ast_file.imports[j].alias {
-				c.error('`${ast_file.imports[j].mod}` was already imported as `${ast_import.alias}` on line ${
-					ast_file.imports[j].mod_pos.line_nr + 1}', ast_import.mod_pos)
-			} else if ast_import.alias != '_' && ast_import.alias == ast_file.imports[j].alias {
-				c.error('`${ast_file.imports[j].mod}` was already imported on line ${
-					ast_file.imports[j].alias_pos.line_nr + 1}', ast_import.alias_pos)
+			if cmp_mod_name == if ast_file.imports[j].mod != ast_file.imports[j].alias
+				&& ast_file.imports[j].alias != '_' {
+				ast_file.imports[j].alias
+			} else {
+				ast_file.imports[j].mod
+			} {
+				c.error('A module `${cmp_mod_name}` was already imported on line ${
+					ast_file.imports[j].mod_pos.line_nr + 1}`.', ast_import.mod_pos)
 			}
 		}
 	}
@@ -1480,6 +1489,7 @@ fn (mut c Checker) check_or_last_stmt(mut stmt ast.Stmt, ret_type ast.Type, expr
 					return
 				}
 				last_stmt_typ := c.expr(mut stmt.expr)
+				stmt.typ = last_stmt_typ
 				if last_stmt_typ.has_flag(.option) || last_stmt_typ == ast.none_type {
 					if stmt.expr in [ast.Ident, ast.SelectorExpr, ast.CallExpr, ast.None, ast.CastExpr] {
 						expected_type_name := c.table.type_to_str(ret_type.clear_option_and_result())
@@ -3271,6 +3281,13 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 				// string literal starts with "c": `C.printf(c'hello')`
 				return ast.u8_type.set_nr_muls(1)
 			}
+			if node.language == .js {
+				// string literal starts with "js": `JS.console.log(js'hello')`
+				if c.js_string.is_void() {
+					c.js_string = c.table.find_type('JS.String')
+				}
+				return c.js_string
+			}
 			if node.is_raw {
 				// raw strings don't need any sort of checking related to unicode
 				return ast.string_type
@@ -3592,6 +3609,20 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		ft := c.table.type_to_str(from_type)
 		tt := c.table.type_to_str(to_type)
 		c.error('cannot cast type `${ft}` to `${tt}`', node.pos)
+	}
+
+	// if from_type == ast.voidptr_type_idx && !c.inside_unsafe && !c.pref.translated
+	// Do not allow `&u8(unsafe { nil })` etc, force nil or voidptr cast
+	if from_type.is_number() && to_type.is_ptr() && !c.inside_unsafe && !c.pref.translated
+		&& !c.file.is_translated {
+		if from_sym.language != .c {
+			ne_name := node.expr.str()
+			if !ne_name.starts_with('C.') {
+				// TODO make an error
+				c.warn('cannot cast a number to a type reference, use `nil` or a voidptr cast first: `&Type(voidptr(123))`',
+					node.pos)
+			}
+		}
 	}
 
 	// T(0) where T is array or map
@@ -3970,7 +4001,14 @@ fn (mut c Checker) at_expr(mut node ast.AtExpr) ast.Type {
 }
 
 fn (mut c Checker) resolve_var_fn(func &ast.Fn, mut node ast.Ident, name string) ast.Type {
-	mut fn_type := ast.new_type(c.table.find_or_register_fn_type(func, false, true))
+	mut fn_type := c.table.find_or_register_fn_type(func, false, true)
+	if fn_type < 0 {
+		mut f := ast.Fn{
+			...func
+		}
+		f.name = ''
+		fn_type = c.table.find_or_register_fn_type(f, false, true)
+	}
 	if func.generic_names.len > 0 {
 		concrete_types := node.concrete_types.map(c.unwrap_generic(it))
 		if typ_ := c.table.convert_generic_type(fn_type, func.generic_names, concrete_types) {
@@ -4003,18 +4041,17 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 		// used inside its initialisation like: `struct Abc { x &Abc } ... const a = [ Abc{0}, Abc{unsafe{&a[0]}} ]!`
 		// see vlib/v/tests/const_fixed_array_containing_references_to_itself_test.v
 		if unsafe { c.const_var != 0 } && name == c.const_var.name {
-			if mut c.const_var.expr is ast.ArrayInit {
-				if c.const_var.expr.is_fixed && c.expected_type.nr_muls() > 0 {
-					elem_typ := c.expected_type.deref()
-					node.kind = .constant
-					node.name = c.const_var.name
-					node.info = ast.IdentVar{
-						typ: elem_typ
-					}
-					// c.const_var.typ = elem_typ
-					node.obj = c.const_var
-					return c.expected_type
+			if mut c.const_var.expr is ast.ArrayInit && c.const_var.expr.is_fixed
+				&& c.expected_type.nr_muls() > 0 {
+				elem_typ := c.expected_type.deref()
+				node.kind = .constant
+				node.name = c.const_var.name
+				node.info = ast.IdentVar{
+					typ: elem_typ
 				}
+				// c.const_var.typ = elem_typ
+				node.obj = c.const_var
+				return c.expected_type
 			}
 			c.error('cycle in constant `${c.const_var.name}`', node.pos)
 			return ast.void_type
@@ -4026,9 +4063,8 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 			c.error('undefined ident: `_` (may only be used in assignments)', node.pos)
 		}
 		return ast.void_type
-	}
-	// second use
-	if node.kind in [.constant, .global, .variable] {
+	} else if node.kind in [.constant, .global, .variable] {
+		// second use
 		info := node.info as ast.IdentVar
 		typ := c.type_resolver.get_type_or_default(node, info.typ)
 		// Got a var with type T, return current generic type
@@ -4322,10 +4358,6 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 			}
 		}
 	}
-	if c.table.known_type(node.name) {
-		// e.g. `User`  in `json.decode(User, '...')`
-		return ast.void_type
-	}
 	return ast.void_type
 }
 
@@ -4607,7 +4639,7 @@ fn (mut c Checker) find_obj_definition(obj ast.ScopeObject) !ast.Expr {
 	// TODO: remove once we have better type inference
 	mut name := ''
 	match obj {
-		ast.Var, ast.ConstField, ast.GlobalField, ast.AsmRegister { name = obj.name }
+		ast.EmptyScopeObject, ast.Var, ast.ConstField, ast.GlobalField, ast.AsmRegister { name = obj.name }
 	}
 	mut expr := ast.empty_expr
 	if obj is ast.Var {
@@ -4666,8 +4698,8 @@ fn (mut c Checker) mark_as_referenced(mut node ast.Expr, as_interface bool) {
 					return
 				}
 				type_sym := c.table.sym(obj.typ.set_nr_muls(0))
-				if obj.is_stack_obj && !type_sym.is_heap() && !c.pref.translated
-					&& !c.file.is_translated {
+				if obj.is_stack_obj && !type_sym.is_heap() && !type_sym.is_int()
+					&& !c.pref.translated && !c.file.is_translated {
 					suggestion := if type_sym.kind == .struct {
 						'declaring `${type_sym.name}` as `@[heap]`'
 					} else {
@@ -4738,13 +4770,10 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 	c.inside_ref_lit = old_inside_ref_lit
 	node.right_type = right_type
 	mut expr := node.right
-	// if ParExpr get the innermost expr
-	for mut expr is ast.ParExpr {
-		expr = expr.expr
-	}
+	expr = expr.remove_par()
 	if node.op == .amp {
-		if node.right is ast.Nil {
-			c.error('invalid operation: cannot take address of nil', node.right.pos())
+		if expr is ast.Nil {
+			c.error('invalid operation: cannot take address of nil', expr.pos())
 		}
 		if mut node.right is ast.PrefixExpr {
 			if node.right.op == .amp {
@@ -4754,76 +4783,78 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 			if expr.op == .amp {
 				c.error('cannot take the address of this expression', expr.pos)
 			}
-		} else if mut node.right is ast.SelectorExpr {
-			if node.right.expr.is_literal() {
-				c.error('cannot take the address of a literal value', node.pos.extend(node.right.pos))
-			} else if node.right.expr is ast.StructInit {
+		} else if mut expr is ast.SelectorExpr {
+			if expr.expr.is_literal() {
+				c.error('cannot take the address of a literal value', node.pos.extend(expr.pos))
+			} else if expr.expr is ast.StructInit {
 				c.error('should not create object instance on the heap to simply access a member',
-					node.pos.extend(node.right.pos))
+					node.pos.extend(expr.pos))
 			}
 			right_sym := c.table.sym(right_type)
-			expr_sym := c.table.sym(node.right.expr_type)
+			expr_sym := c.table.sym(expr.expr_type)
 			if expr_sym.kind == .struct && (expr_sym.info as ast.Struct).is_minify
-				&& (node.right.typ == ast.bool_type_idx || (right_sym.kind == .enum
+				&& (expr.typ == ast.bool_type_idx || (right_sym.kind == .enum
 				&& !(right_sym.info as ast.Enum).is_flag
 				&& !(right_sym.info as ast.Enum).uses_exprs)) {
-				c.error('cannot take the address of field in struct `${c.table.type_to_str(node.right.expr_type)}`, which is tagged as `@[minify]`',
-					node.pos.extend(node.right.pos))
+				c.error('cannot take the address of field in struct `${c.table.type_to_str(expr.expr_type)}`, which is tagged as `@[minify]`',
+					node.pos.extend(expr.pos))
 			}
 
-			if node.right.typ.has_flag(.option) {
-				c.error('cannot take the address of an Option field', node.pos.extend(node.right.pos))
+			if expr.typ.has_flag(.option) {
+				c.error('cannot take the address of an Option field', node.pos.extend(expr.pos))
 			}
 		}
 	}
 	// TODO: testing ref/deref strategy
 	right_is_ptr := right_type.is_ptr()
-	if node.op == .amp && (!right_is_ptr || (right_is_ptr && node.right is ast.CallExpr)) {
+	if node.op == .amp && (!right_is_ptr || (right_is_ptr && expr is ast.CallExpr)) {
 		if expr in [ast.BoolLiteral, ast.CallExpr, ast.CharLiteral, ast.FloatLiteral, ast.IntegerLiteral,
 			ast.InfixExpr, ast.StringLiteral, ast.StringInterLiteral] {
 			c.error('cannot take the address of ${expr}', node.pos)
 		}
-		if mut node.right is ast.Ident {
-			if node.right.kind == .constant && !c.inside_unsafe && c.pref.experimental {
-				c.warn('cannot take the address of const outside `unsafe`', node.right.pos)
+		if mut expr is ast.Ident {
+			if expr.kind == .constant && !c.inside_unsafe && c.pref.experimental {
+				c.warn('cannot take the address of const outside `unsafe`', expr.pos)
 			}
 		}
-		if node.right is ast.SelectorExpr {
+		if expr is ast.SelectorExpr {
 			typ_sym := c.table.sym(right_type)
 			if typ_sym.kind == .map && !c.inside_unsafe {
 				c.error('cannot take the address of map values outside `unsafe`', node.pos)
 			}
 		}
-		if mut node.right is ast.IndexExpr {
-			typ_sym := c.table.sym(node.right.left_type)
+		if mut expr is ast.IndexExpr {
+			typ_sym := c.table.sym(expr.left_type)
 			mut is_mut := false
-			if mut node.right.left is ast.Ident {
-				ident := node.right.left
+			if mut expr.left is ast.Ident {
+				ident := expr.left
 				// TODO: temporary, remove this
 				ident_obj := ident.obj
 				if ident_obj is ast.Var {
 					is_mut = ident_obj.is_mut
 				}
 			}
-			if typ_sym.kind == .map {
-				c.error('cannot take the address of map values', node.right.pos)
-			}
 			if !c.inside_unsafe {
 				if typ_sym.kind == .array && is_mut {
 					c.error('cannot take the address of mutable array elements outside unsafe blocks',
-						node.right.pos)
+						expr.pos)
+				}
+
+				if typ_sym.kind == .map {
+					c.error('cannot take the address of map values outside `unsafe`',
+						expr.pos)
 				}
 			}
 		}
 		if !c.inside_fn_arg && !c.inside_unsafe {
-			c.mark_as_referenced(mut &node.right, false)
+			c.mark_as_referenced(mut &expr, false)
 		}
 		return right_type.ref()
-	} else if node.op == .amp && node.right !is ast.CastExpr {
+	} else if node.op == .amp && expr !is ast.CastExpr {
 		if !c.inside_fn_arg && !c.inside_unsafe {
-			c.mark_as_referenced(mut &node.right, false)
+			c.mark_as_referenced(mut &expr, false)
 		}
-		if node.right.is_auto_deref_var() {
+		if expr.is_auto_deref_var() {
 			return right_type
 		} else {
 			return right_type.ref()
@@ -4833,7 +4864,7 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 	if node.op == .mul {
 		if right_type.has_flag(.option) {
 			c.error('type `?${right_sym.name}` is an Option, it must be unwrapped first; use `*var?` to do it',
-				node.right.pos())
+				expr.pos())
 		}
 		if right_type.is_ptr() {
 			return right_type.deref()
@@ -4846,11 +4877,11 @@ fn (mut c Checker) prefix_expr(mut node ast.PrefixExpr) ast.Type {
 		if right_type.is_voidptr() {
 			c.error('cannot dereference to void', node.pos)
 		}
-		if mut node.right is ast.Ident {
-			if var := node.right.scope.find_var('${node.right.name}') {
+		if mut expr is ast.Ident {
+			if var := expr.scope.find_var('${expr.name}') {
 				if var.expr is ast.UnsafeExpr {
 					if var.expr.expr is ast.Nil {
-						c.error('cannot deference a `nil` pointer', node.right.pos)
+						c.error('cannot deference a `nil` pointer', expr.pos)
 					}
 				}
 			}
@@ -5306,10 +5337,7 @@ fn (mut c Checker) ensure_generic_type_specify_type_names(typ ast.Type, pos toke
 
 	sym := c.table.final_sym(typ)
 	if c.ensure_generic_type_level > 38 {
-		dump(typ)
-		dump(sym.kind)
-		dump(pos)
-		dump(c.ensure_generic_type_level)
+		eprintln('>> c.ensure_generic_type_level: ${c.ensure_generic_type_level} > 38, in ${@METHOD}, typ: ${typ}, sym.kind: ${sym.kind}, pos: ${pos}')
 	}
 	match sym.kind {
 		.function {

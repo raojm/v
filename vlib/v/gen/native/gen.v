@@ -35,8 +35,10 @@ mut:
 	extern_symbols            []string
 	linker_include_paths      []string
 	linker_libs               []string
+	extern_vars               map[i64]string
 	extern_fn_calls           map[i64]string
 	fn_addr                   map[string]i64
+	fn_names                  []string
 	var_offset                map[string]i32 // local var stack offset
 	var_alloc_size            map[string]i32 // local var allocation size
 	stack_var_pos             i32
@@ -80,6 +82,7 @@ interface CodeGen {
 mut:
 	g &Gen
 	add(r Register, val i32)
+	add_reg2(r Register, r2 Register)
 	address_size() i32
 	adr(r Arm64Register, delta i32) // Note: Temporary!
 	allocate_var(name string, size i32, initial_val Number) i32
@@ -93,10 +96,12 @@ mut:
 	cmp_to_stack_top(r Register)
 	cmp_var_reg(var Var, reg Register, config VarConfig)
 	cmp_var(var Var, val i32, config VarConfig)
+	cmp_reg2(reg Register, reg2 Register)
 	cmp_zero(reg Register)
 	convert_bool_to_string(r Register)
 	convert_int_to_string(a Register, b Register)
 	convert_rune_to_string(r Register, buffer i32, var Var, config VarConfig)
+	create_string_struct(typ ast.Type, name string, str string) i32
 	dec_var(var Var, config VarConfig)
 	fn_decl(node ast.FnDecl)
 	gen_asm_stmt(asm_node ast.AsmStmt)
@@ -128,6 +133,7 @@ mut:
 	mov64(r Register, val Number)
 	movabs(reg Register, val i64)
 	patch_relative_jmp(pos i32, addr i64)
+	pop2(r Register)
 	prefix_expr(node ast.PrefixExpr)
 	push(r Register)
 	ret()
@@ -206,8 +212,10 @@ type Number = u64 | i64
 struct Enum {
 	size i32 // size of the type of the enum in bytes
 mut:
-	fields map[string]Number
+	fields map[string]EnumVal
 }
+
+type EnumVal = Number | ast.Expr
 
 struct MultiReturn {
 mut:
@@ -230,6 +238,11 @@ struct LocalVar {
 	name   string
 }
 
+struct ExternVar {
+	typ  ast.Type
+	name string
+}
+
 struct GlobalVar {}
 
 @[params]
@@ -239,9 +252,9 @@ pub:
 	typ    ast.Type // type of the value you want to process e.g. struct fields.
 }
 
-type Var = GlobalVar | LocalVar | ast.Ident
+type Var = GlobalVar | ExternVar | LocalVar | ast.Ident
 
-type IdentVar = GlobalVar | LocalVar | Register
+type IdentVar = GlobalVar | ExternVar | LocalVar | Register
 
 enum JumpOp {
 	je
@@ -265,6 +278,9 @@ fn byt(n i32, s i32) u8 {
 }
 
 fn (mut g Gen) get_var_from_ident(ident ast.Ident) IdentVar {
+	if ident.name in g.extern_symbols {
+		return ExternVar{ident.info.typ, ident.name}
+	}
 	mut obj := ident.obj
 	if obj !in [ast.Var, ast.ConstField, ast.GlobalField, ast.AsmRegister] {
 		obj = ident.scope.find(ident.name) or {
@@ -296,6 +312,9 @@ fn (mut g Gen) get_type_from_var(var Var) ast.Type {
 		}
 		GlobalVar {
 			g.n_error('${@LOCATION} cannot get type from GlobalVar yet')
+		}
+		else {
+			g.n_error('${@LOCATION} unsupported var type ${var}')
 		}
 	}
 }
@@ -543,22 +562,33 @@ pub fn (mut g Gen) calculate_enum_fields() {
 			size: i32(enum_size)
 		}
 		mut value := Number(if decl.is_flag { i64(1) } else { i64(0) })
+		mut has_expr := false
 		for field in decl.fields {
 			if field.has_expr {
-				str_val := g.eval.expr(field.expr, ast.int_type_idx).string()
-				if str_val.len >= 0 && str_val[0] == `-` {
-					value = str_val.i64()
+				if field.expr.is_literal() { // does not depend on other declarations (C compile time csts)
+					str_val := g.eval.expr(field.expr, ast.int_type_idx).string()
+					if str_val.len >= 0 && str_val[0] == `-` {
+						value = str_val.i64()
+					} else {
+						value = str_val.u64()
+					}
 				} else {
-					value = str_val.u64()
+					enum_vals.fields[field.name] = field.expr
+					has_expr = true
+					continue
+				}
+			} else {
+				if has_expr {
+					g.n_error('${@LOCATION} unsupported auto incr after C consts')
 				}
 			}
 			match value {
 				// Dereferences the sumtype (it would get assigned by address and messed up)
 				i64 {
-					enum_vals.fields[field.name] = value as i64
+					enum_vals.fields[field.name] = Number(value as i64)
 				}
 				u64 {
-					enum_vals.fields[field.name] = value as u64
+					enum_vals.fields[field.name] = Number(value as u64)
 				}
 			}
 			if decl.is_flag {
@@ -876,6 +906,7 @@ fn (mut g Gen) is_fp_type(typ ast.Type) bool {
 
 fn (mut g Gen) get_sizeof_ident(ident ast.Ident) i32 {
 	typ := match ident.obj {
+		ast.EmptyScopeObject { ident.obj.typ }
 		ast.AsmRegister { ast.i64_type }
 		ast.ConstField { ident.obj.typ }
 		ast.GlobalField { ident.obj.typ }
@@ -1126,6 +1157,7 @@ fn (mut g Gen) fn_decl(node ast.FnDecl) {
 	g.stack_var_pos = 0
 	g.stack_depth = 0
 	g.register_function_address(name)
+	g.fn_names << name
 	g.labels = &LabelTable{}
 	g.defer_stmts.clear()
 	g.return_type = node.return_type
@@ -1174,6 +1206,7 @@ fn (mut g Gen) println(comment string) {
 
 @[noreturn]
 pub fn (mut g Gen) n_error(s string) {
+	print_backtrace()
 	util.verror('native error', s)
 }
 

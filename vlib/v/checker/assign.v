@@ -4,7 +4,7 @@ module checker
 
 import v.ast
 
-// TODO: 600 line function
+// TODO: 980 line function
 fn (mut c Checker) assign_stmt(mut node ast.AssignStmt) {
 	prev_inside_assign := c.inside_assign
 	c.inside_assign = true
@@ -339,10 +339,7 @@ fn (mut c Checker) assign_stmt(mut node ast.AssignStmt) {
 		if left is ast.ParExpr && is_decl {
 			c.error('parentheses are not supported on the left side of `:=`', left.pos())
 		}
-
-		for left is ast.ParExpr {
-			left = (left as ast.ParExpr).expr
-		}
+		left = left.remove_par()
 		is_assign := node.op in [.assign, .decl_assign]
 		match mut left {
 			ast.Ident {
@@ -876,12 +873,19 @@ or use an explicit `unsafe{ a[..] }`, if you do not want a copy of the slice.',
 							node.pos)
 					}
 				} else {
-					// allow `t.$(field.name) = 0` where `t.$(field.name)` is a enum
 					if c.comptime.comptime_for_field_var != '' && left is ast.ComptimeSelector {
-						field_sym := c.table.sym(c.unwrap_generic(c.comptime.comptime_for_field_type))
+						field_type := c.unwrap_generic(c.comptime.comptime_for_field_type)
+						field_sym := c.table.sym(field_type)
 
+						// allow `t.$(field.name) = 0` where `t.$(field.name)` is a enum
 						if field_sym.kind == .enum && !right_type.is_int() {
 							c.error('enums can only be assigned `int` values', right.pos())
+						}
+						// disallow invalid `t.$(field.name)` type assignment
+						if !c.check_types(field_type, right_type) && !(c.inside_x_matches_type
+							|| field_sym.kind == .enum) {
+							c.error('cannot assign to `${left}`: ${c.expected_msg(right_type,
+								field_type)}', right.pos())
 						}
 					} else {
 						if right_type_unwrapped != ast.void_type {
@@ -936,9 +940,7 @@ or use an explicit `unsafe{ a[..] }`, if you do not want a copy of the slice.',
 			c.inside_ref_lit = old_inside_ref_lit
 			if right_node.op == .amp {
 				mut expr := right_node.right
-				for mut expr is ast.ParExpr {
-					expr = expr.expr
-				}
+				expr = expr.remove_par()
 				if mut expr is ast.Ident {
 					if mut expr.obj is ast.Var {
 						v := expr.obj

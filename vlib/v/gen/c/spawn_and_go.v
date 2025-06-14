@@ -246,7 +246,11 @@ fn (mut g Gen) spawn_and_go_expr(node ast.SpawnExpr, mode SpawnGoMode) {
 				g.gowrappers.write_string('\t*((${s_ret_typ}*)(arg->ret_ptr)) = ')
 			} else {
 				g.gowrappers.writeln('\t${s_ret_typ}* ret_ptr = (${s_ret_typ}*) _v_malloc(sizeof(${s_ret_typ}));')
-				g.gowrappers.write_string('\t*ret_ptr = ')
+				$if tinyc && arm64 {
+					g.gowrappers.write_string('\t${s_ret_typ} tcc_bug_tmp_var = ')
+				} $else {
+					g.gowrappers.write_string('\t*ret_ptr = ')
+				}
 			}
 		} else {
 			g.gowrappers.write_string('\t')
@@ -335,6 +339,11 @@ fn (mut g Gen) spawn_and_go_expr(node ast.SpawnExpr, mode SpawnGoMode) {
 			}
 		}
 		g.gowrappers.writeln(');')
+		$if tinyc && arm64 {
+			if g.pref.os != .windows && call_ret_type != ast.void_type {
+				g.gowrappers.writeln('\t*ret_ptr = tcc_bug_tmp_var;')
+			}
+		}
 		if is_spawn {
 			g.gowrappers.writeln('\t_v_free(arg);')
 		}
@@ -412,10 +421,10 @@ fn (mut g Gen) create_waiter_handler(call_ret_type ast.Type, s_ret_typ string, g
 			g.gowrappers.writeln('\tret_ptr = thread.ret_ptr;')
 		}
 	} else {
-		g.gowrappers.writeln('\tif ((unsigned long int)thread == 0) { _v_panic(_SLIT("unable to join thread")); }')
+		g.gowrappers.writeln('\tif ((unsigned long int)thread == 0) { _v_panic(_S("unable to join thread")); }')
 		g.gowrappers.writeln('\tint stat = pthread_join(thread, (void **)${c_ret_ptr_ptr});')
 	}
-	g.gowrappers.writeln('\tif (stat != 0) { _v_panic(_SLIT("unable to join thread")); }')
+	g.gowrappers.writeln('\tif (stat != 0) { _v_panic(_S("unable to join thread")); }')
 	if g.pref.os == .windows {
 		if call_ret_type == ast.void_type {
 			g.gowrappers.writeln('\tCloseHandle(thread);')

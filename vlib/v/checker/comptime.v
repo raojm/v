@@ -274,6 +274,7 @@ fn (mut c Checker) comptime_for(mut node ast.ComptimeFor) {
 			has_different_types := fields.len > 1
 				&& !fields.all(c.check_basic(it.typ, fields[0].typ))
 			for field in fields {
+				prev_inside_x_matches_type := c.inside_x_matches_type
 				c.push_new_comptime_info()
 				c.comptime.inside_comptime_for = true
 				c.table.used_features.comptime_for = true
@@ -301,6 +302,7 @@ fn (mut c Checker) comptime_for(mut node ast.ComptimeFor) {
 					}
 				}
 				c.pop_comptime_info()
+				c.inside_x_matches_type = prev_inside_x_matches_type
 			}
 		} else if node.typ != ast.void_type && c.table.generic_type_names(node.typ).len == 0
 			&& sym.kind != .placeholder {
@@ -844,10 +846,14 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 					}
 				}
 				.eq, .ne {
-					if cond.left is ast.SelectorExpr
+					if mut cond.left is ast.SelectorExpr
 						&& cond.right in [ast.IntegerLiteral, ast.StringLiteral] {
 						// $if field.indirections == 1
 						// $if method.args.len == 1
+						if cond.left.typ == 0 && cond.left.name_type == 0
+							&& (cond.left.expr is ast.Ident && cond.left.expr.name.len == 1) {
+							c.expr(mut cond.left)
+						}
 						return .unknown
 					} else if cond.left is ast.SelectorExpr
 						&& c.comptime.check_comptime_is_field_selector_bool(cond.left) {
@@ -906,6 +912,11 @@ fn (mut c Checker) comptime_if_cond(mut cond ast.Expr, pos token.Pos) ComptimeBr
 					}
 				}
 				.gt, .lt, .ge, .le {
+					if cond.left is ast.SelectorExpr && cond.left.typ == 0
+						&& cond.left.name_type == 0
+						&& (cond.left.expr is ast.Ident && cond.left.expr.name.len == 1) {
+						c.expr(mut cond.left)
+					}
 					if cond.left is ast.SelectorExpr && cond.right is ast.IntegerLiteral
 						&& c.comptime.is_comptime_selector_field_name(cond.left, 'indirections') {
 						return .unknown

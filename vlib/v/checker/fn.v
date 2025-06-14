@@ -709,6 +709,7 @@ fn (mut c Checker) call_expr(mut node ast.CallExpr) ast.Type {
 	old_inside_fn_arg := c.inside_fn_arg
 	c.inside_fn_arg = true
 	mut continue_check := true
+	node.left_type = left_type
 	// Now call `method_call` or `fn_call` for specific checks.
 	typ := if node.is_method {
 		c.method_call(mut node, mut continue_check)
@@ -730,7 +731,7 @@ fn (mut c Checker) call_expr(mut node ast.CallExpr) ast.Type {
 			if arg.typ != ast.string_type {
 				continue
 			}
-			if arg.expr in [ast.Ident, ast.StringLiteral, ast.SelectorExpr]
+			if arg.expr in [ast.Ident, ast.StringLiteral, ast.SelectorExpr, ast.ComptimeSelector]
 				|| (arg.expr is ast.CallExpr && arg.expr.or_block.kind != .absent) {
 				// Simple expressions like variables, string literals, selector expressions
 				// (`x.field`) can't result in allocations and don't need to be assigned to
@@ -878,7 +879,7 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 			c.table.used_features.comptime_calls[fn_name] = true
 		}
 	}
-	if fn_name == 'main' {
+	if !c.file.is_test && fn_name == 'main' {
 		c.error('the `main` function cannot be called in the program', node.pos)
 	}
 	mut has_generic := false // foo[T]() instead of foo[int]()
@@ -1020,7 +1021,6 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 	if node.left is ast.AnonFn {
 		// it was set to anon for checker errors, clear for gen
 		node.name = ''
-		c.expr(mut node.left)
 		left := node.left as ast.AnonFn
 		if left.typ != ast.no_type {
 			anon_fn_sym := c.table.sym(left.typ)
@@ -1039,7 +1039,6 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 		}
 	}
 	if !found && node.left is ast.IndexExpr {
-		c.expr(mut node.left)
 		left := node.left as ast.IndexExpr
 		sym := c.table.final_sym(left.left_type)
 		if sym.info is ast.Array {
@@ -1077,7 +1076,6 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 		}
 	}
 	if !found && node.left is ast.CallExpr {
-		c.expr(mut node.left)
 		left := node.left as ast.CallExpr
 		if left.return_type != 0 {
 			sym := c.table.sym(left.return_type)
@@ -1614,6 +1612,12 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 				c.error('cannot use `${got_typ_str}` as `${expected_typ_str}` in argument ${i + 1} to `${fn_name}`',
 					call_arg.pos)
 			}
+			if call_arg.expr is ast.ArrayDecompose && arg_typ.idx() != final_param_typ.idx() {
+				expected_type_str := c.table.type_to_str(param.typ)
+				got_type_str := c.table.type_to_str(arg_typ)
+				c.error('cannot use `${got_type_str}` as `${expected_type_str}` in argument ${i + 1} to `${fn_name}`',
+					call_arg.pos)
+			}
 			continue
 		}
 		if param.typ.is_ptr() && !param.is_mut && !call_arg.typ.is_any_kind_of_pointer()
@@ -1779,7 +1783,7 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 			else if param.typ == ast.voidptr_type && func.language == .v
 				&& arg_typ !in [ast.voidptr_type, ast.nil_type] && arg_typ.nr_muls() == 0
 				&& func.name !in ['isnil', 'ptr_str'] && !func.name.starts_with('json.')
-				&& arg_typ_sym.kind !in [.float_literal, .int_literal, .charptr]
+				&& arg_typ_sym.kind !in [.float_literal, .int_literal, .charptr, .function]
 				&& !c.pref.backend.is_js() {
 				c.warn('automatic ${arg_typ_sym.name} referencing/dereferencing into voidptr is deprecated and will be removed soon; use `foo(&x)` instead of `foo(x)`',
 					call_arg.pos)
@@ -1848,6 +1852,12 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 							c.handle_generic_lambda_arg(node, mut call_arg.expr)
 							continue
 						}
+						// passing []?T to []T
+						if !unwrap_typ.has_flag(.variadic) && unwrap_sym.kind == .array
+							&& c.table.final_sym(utyp).kind == .array
+							&& c.check_basic(c.table.value_type(utyp).clear_flag(.option), c.table.value_type(unwrap_typ)) {
+							continue
+						}
 						c.error('${err.msg()} in argument ${i + 1} to `${fn_name}`', call_arg.pos)
 					}
 				}
@@ -1857,7 +1867,7 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 
 	// resolve return generics struct to concrete type
 	if func.generic_names.len > 0 && func.return_type.has_flag(.generic)
-		&& c.table.cur_fn != unsafe { nil } && c.table.cur_fn.generic_names.len == 0 {
+		&& c.table.cur_fn != unsafe { nil } && c.needs_unwrap_generic_type(func.return_type) {
 		node.return_type = c.table.unwrap_generic_type(func.return_type, func.generic_names,
 			concrete_types)
 	} else {
@@ -1973,9 +1983,7 @@ fn (mut c Checker) check_type_and_visibility(name string, type_idx int, expected
 fn (mut c Checker) method_call(mut node ast.CallExpr, mut continue_check &bool) ast.Type {
 	// `(if true { 'foo.bar' } else { 'foo.bar.baz' }).all_after('foo.')`
 	mut left_expr := node.left
-	for mut left_expr is ast.ParExpr {
-		left_expr = left_expr.expr
-	}
+	left_expr = left_expr.remove_par()
 	if mut left_expr is ast.IfExpr {
 		if left_expr.branches.len > 0 && left_expr.has_else {
 			mut last_stmt := left_expr.branches[0].stmts.last()
@@ -1984,7 +1992,7 @@ fn (mut c Checker) method_call(mut node ast.CallExpr, mut continue_check &bool) 
 			}
 		}
 	}
-	left_type := c.expr(mut node.left)
+	left_type := node.left_type
 	if left_type == ast.void_type {
 		// c.error('cannot call a method using an invalid expression', node.pos)
 		continue_check = false
@@ -2603,6 +2611,12 @@ fn (mut c Checker) method_call(mut node ast.CallExpr, mut continue_check &bool) 
 					continue
 				}
 			}
+			// passing []?T to []T
+			if !exp_arg_typ.has_flag(.variadic) && param_typ_sym.kind == .array
+				&& c.table.final_sym(got_arg_typ).kind == .array
+				&& c.check_basic(c.table.value_type(got_arg_typ).clear_flag(.option), c.table.value_type(exp_arg_typ)) {
+				continue
+			}
 			c.error('${err.msg()} in argument ${i + 1} to `${left_sym.name}.${method_name}`',
 				arg.pos)
 		}
@@ -2710,6 +2724,9 @@ fn (mut c Checker) spawn_expr(mut node ast.SpawnExpr) ast.Type {
 		c.error('option handling cannot be done in `spawn` call. Do it when calling `.wait()`',
 			node.call_expr.or_block.pos)
 	}
+	if node.is_expr {
+		c.table.used_features.waiter = true
+	}
 	// Make sure there are no mutable arguments
 	for arg in node.call_expr.args {
 		if arg.is_mut && !arg.typ.is_ptr() {
@@ -2744,6 +2761,9 @@ fn (mut c Checker) go_expr(mut node ast.GoExpr) ast.Type {
 	if node.call_expr.or_block.kind != .absent {
 		c.error('option handling cannot be done in `go` call. Do it when calling `.wait()`',
 			node.call_expr.or_block.pos)
+	}
+	if node.is_expr {
+		c.table.used_features.waiter = true
 	}
 	// Make sure there are no mutable arguments
 	for arg in node.call_expr.args {
@@ -2967,8 +2987,8 @@ fn (mut c Checker) check_predicate_param(is_map bool, elem_typ ast.Type, node as
 		// Finish early so that it doesn't fail later
 		return
 	}
-	arg_expr := node.args[0].expr
-	match arg_expr {
+	mut arg_expr := node.args[0].expr
+	match mut arg_expr {
 		ast.AnonFn {
 			if arg_expr.decl.return_type.has_flag(.option) {
 				c.error('option needs to be unwrapped before using it in map/filter',
@@ -3008,7 +3028,7 @@ fn (mut c Checker) check_predicate_param(is_map bool, elem_typ ast.Type, node as
 						arg_expr.pos)
 				}
 			} else if arg_expr.kind == .variable {
-				if arg_expr.obj is ast.Var {
+				if mut arg_expr.obj is ast.Var {
 					expr := arg_expr.obj.expr
 					if expr is ast.AnonFn {
 						// copied from above
@@ -3068,13 +3088,18 @@ fn (mut c Checker) check_predicate_param(is_map bool, elem_typ ast.Type, node as
 			}
 		}
 		ast.LambdaExpr {
-			if arg_expr.expr is ast.CallExpr && is_map
+			if mut arg_expr.expr is ast.CallExpr && is_map
 				&& arg_expr.expr.return_type in [ast.void_type, 0] {
 				c.error('type mismatch, `${arg_expr.expr.name}` does not return anything',
 					arg_expr.expr.pos)
 			}
 		}
-		else {}
+		else {
+			if !is_map && c.expr(mut arg_expr) != ast.bool_type {
+				c.error('invalid expression, expected infix expr, lambda or function',
+					arg_expr.pos())
+			}
+		}
 	}
 }
 

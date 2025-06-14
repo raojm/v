@@ -176,9 +176,14 @@ fn pg_stmt_match(mut types []u32, mut vals []&char, mut lens []int, mut formats 
 		}
 		orm.Null {
 			types << u32(0) // we do not know col type, let server infer
-			vals << &char(0) // NULL pointer indicates NULL
+			vals << &char(unsafe { nil }) // NULL pointer indicates NULL
 			lens << int(0) // ignored
 			formats << 0 // ignored
+		}
+		[]orm.Primitive {
+			for element in data {
+				pg_stmt_match(mut types, mut vals, mut lens, mut formats, element)
+			}
 		}
 	}
 }

@@ -213,7 +213,9 @@ fn (mut p Parser) struct_decl(is_anon bool) ast.StructDecl {
 			mut option_pos := token.Pos{}
 
 			if p.tok.kind == .rcbr {
-				ast_fields.last().next_comments << pre_field_comments
+				if ast_fields.len > 0 {
+					ast_fields.last().next_comments << pre_field_comments
+				}
 				break
 			}
 
@@ -510,6 +512,17 @@ fn (mut p Parser) struct_init(typ_str string, kind ast.StructInitKind, is_option
 			has_prev_newline = p.has_prev_newline()
 			has_break_line = has_prev_newline || p.has_prev_line_comment_or_label()
 			field_name = p.check_name()
+			if p.is_vls {
+				// In VLS mode allow unfinished struct inits without the ending }
+				// `Foo{
+				//  field: name.`
+
+				if p.tok.kind != .colon {
+					unsafe {
+						goto end
+					}
+				}
+			}
 			p.check(.colon)
 			expr = p.expr(0)
 			end_comments = p.eat_comments(same_line: true)
@@ -552,6 +565,7 @@ fn (mut p Parser) struct_init(typ_str string, kind ast.StructInitKind, is_option
 		p.check(.rcbr)
 	}
 	p.is_amp = saved_is_amp
+	end:
 	return ast.StructInit{
 		unresolved:           typ.has_flag(.generic)
 		typ_str:              typ_str

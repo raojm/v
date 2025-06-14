@@ -104,8 +104,8 @@ fn (mut a App) collect_info() {
 	}
 	a.line('OS', '${os_kind}, ${os_details}')
 	a.line('Processor', arch_details.join(', '))
-	total_memory := f32(runtime.total_memory()) / (1024.0 * 1024.0 * 1024.0)
-	free_memory := f32(runtime.free_memory()) / (1024.0 * 1024.0 * 1024.0)
+	total_memory := f32(runtime.total_memory() or { 0 }) / (1024.0 * 1024.0 * 1024.0)
+	free_memory := f32(runtime.free_memory() or { 0 }) / (1024.0 * 1024.0 * 1024.0)
 	if total_memory != 0 && free_memory != 0 {
 		a.line('Memory', '${free_memory:.2}GB/${total_memory:.2}GB')
 	} else {
@@ -126,12 +126,12 @@ fn (mut a App) collect_info() {
 	a.line2('VMODULES', diagnose_dir(vmodules), vmodules)
 	a.line2('VTMP', diagnose_dir(vtmp_dir), vtmp_dir)
 	a.line2('Current working dir', diagnose_dir(getwd), getwd)
-	vflags := os.getenv('VFLAGS')
 	a.line('', '')
-	if vflags != '' {
-		a.line('env VFLAGS', '"${vflags}"')
-		a.line('', '')
-	}
+
+	a.line_env('VFLAGS')
+	a.line_env('CFLAGS')
+	a.line_env('LDFLAGS')
+
 	a.line('Git version', a.cmd(command: 'git --version'))
 	a.line('V git status', a.git_info())
 	a.line('.git/config present', os.is_file('.git/config').str())
@@ -149,7 +149,7 @@ fn (mut a App) collect_info() {
 	}
 	a.report_tcc_version('thirdparty/tcc')
 	a.line('emcc version', a.cmd(command: 'emcc --version'))
-	if os_kind != 'openbsd' {
+	if os_kind != 'openbsd' && os_kind != 'freebsd' {
 		a.line('glibc version', a.cmd(command: 'ldd --version'))
 	} else {
 		a.line('glibc version', 'N/A')
@@ -186,6 +186,13 @@ fn (mut a App) line(label string, value string) {
 fn (mut a App) line2(label string, value string, value2 string) {
 	a.println('|${label:-20}|${term.colorize(term.bold, value)}, value: ${term.colorize(term.bold,
 		value2)}')
+}
+
+fn (mut a App) line_env(env_var string) {
+	value := os.getenv(env_var)
+	if value != '' {
+		a.line('env ${env_var}', '"${value}"')
+	}
 }
 
 fn (app &App) parse(config string, sep string) map[string]string {
@@ -237,6 +244,11 @@ fn (mut a App) cpu_info(key string) string {
 }
 
 fn (mut a App) git_info() string {
+	// Check if in a Git repository
+	x := os.execute('git rev-parse --is-inside-work-tree')
+	if x.exit_code != 0 || x.output.trim_space() != 'true' {
+		return 'N/A'
+	}
 	mut out := a.cmd(command: 'git -C . describe --abbrev=8 --dirty --always --tags').trim_space()
 	os.execute('git -C . remote add V_REPO https://github.com/vlang/v') // ignore failure (i.e. remote exists)
 	if '-skip-github' !in os.args {

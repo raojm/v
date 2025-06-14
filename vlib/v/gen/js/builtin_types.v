@@ -22,9 +22,12 @@ fn (mut g JsGen) copy_val(t ast.Type, tmp string) string {
 }
 
 fn (mut g JsGen) to_js_typ_val(t ast.Type) string {
-	sym := g.table.sym(t)
+	sym := g.table.sym(g.table.unaliased_type(t))
 	mut styp := ''
 	mut prefix := 'new '
+	if sym.info is ast.SumType {
+		return g.to_js_typ_val(sym.info.variants[0])
+	}
 	match sym.kind {
 		.i8, .i16, .int, .i64, .u8, .u16, .u32, .u64, .f32, .f64, .int_literal, .float_literal {
 			styp = '${prefix}${g.sym_to_js_typ(sym)}(0)'
@@ -329,6 +332,20 @@ fn (mut g JsGen) gen_builtin_prototype(c BuiltinPrototypeConfig) {
 	g.writeln('function ${c.typ_name}__eq(self,other) { return ${c.eq}; } ')
 }
 
+fn (mut g JsGen) gen_nil_const() {
+	g.writeln('const nil__ = new \$ref(new nil());')
+	g.gen_builtin_prototype(
+		typ_name:      'nil'
+		val_name:      'str'
+		default_value: 'new String("&nil")'
+		constructor:   'this.str = str.toString(); this.len = this.str.length'
+		value_of:      'null'
+		to_string:     '"&nil"'
+		eq:            'new bool(self.valueOf() === other.valueOf())'
+		to_jsval:      'null'
+	)
+}
+
 // generate builtin type definitions, used for casting and methods.
 fn (mut g JsGen) gen_builtin_type_defs() {
 	g.inc_indent()
@@ -439,7 +456,7 @@ fn (mut g JsGen) gen_builtin_type_defs() {
 					value_of:      'this.val | 0'
 					to_string:     'new string(this.val + "")'
 					eq:            'new bool(self.valueOf() === other.valueOf())'
-					to_jsval:      '+this'
+					to_jsval:      'String.fromCharCode(+this)'
 				)
 			}
 			'f32', 'f64', 'float_literal' {
@@ -477,7 +494,7 @@ fn (mut g JsGen) gen_builtin_type_defs() {
 					typ_name:      typ_name
 					val_name:      'map'
 					default_value: 'new map({})'
-					constructor:   'this.map = map; this.length = 0;'
+					constructor:   'this.map = map; this.length = Object.keys(this.map).length;'
 					value_of:      'this'
 					to_string:     'this.map.toString()'
 					eq:            'new bool(vEq(self, other))'

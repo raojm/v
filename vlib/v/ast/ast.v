@@ -117,7 +117,13 @@ pub type Stmt = AsmStmt
 	| StructDecl
 	| TypeDecl
 
-pub type ScopeObject = AsmRegister | ConstField | GlobalField | Var
+pub struct EmptyScopeObject {
+pub mut:
+	name string
+	typ  Type
+}
+
+pub type ScopeObject = EmptyScopeObject | AsmRegister | ConstField | GlobalField | Var
 
 // TODO: replace Param
 pub type Node = CallArg
@@ -162,6 +168,8 @@ pub enum ComptimeTypeKind {
 	function
 	option
 	string
+	pointer
+	voidptr
 }
 
 pub struct ComptimeType {
@@ -187,6 +195,8 @@ pub fn (cty ComptimeType) str() string {
 		.function { '\$function' }
 		.option { '\$option' }
 		.string { '\$string' }
+		.pointer { '\$pointer' }
+		.voidptr { '\$voidptr' }
 	}
 }
 
@@ -205,6 +215,7 @@ pub:
 pub const empty_expr = Expr(EmptyExpr(0))
 pub const empty_stmt = Stmt(EmptyStmt{})
 pub const empty_node = Node(EmptyNode{})
+pub const empty_scope_object = ScopeObject(EmptyScopeObject{'empty_scope_object', 0})
 pub const empty_comptime_const_value = ComptTimeConstValue(EmptyExpr(0))
 
 // `{stmts}` or `unsafe {stmts}`
@@ -707,7 +718,6 @@ pub mut:
 	is_conditional     bool     // true for `[if abc]fn(){}`
 	ctdefine_idx       int      // the index of the attribute, containing the compile time define [if mytag]
 	from_embedded_type Type     // for interface only, fn from the embedded interface
-	from_embeded_type  Type @[deprecated: 'use from_embedded_type instead'; deprecated_after: '2024-03-31']
 	//
 	is_expand_simple_interpolation bool // for tagging b.f(s string), which is then called with `b.f('some $x $y')`,
 	// when that call, should be expanded to `b.f('some '); b.f(x); b.f(' '); b.f(y);`
@@ -993,6 +1003,7 @@ pub:
 	is_test       bool // true for _test.v files
 	is_generated  bool // true for `@[generated] module xyz` files; turn off notices
 	is_translated bool // true for `@[translated] module xyz` files; turn off some checks
+	language      Language
 pub mut:
 	idx              int    // index in an external container; can be used to refer to the file in a more efficient way, just by its integer index
 	path             string // absolute path of the source file - '/projects/v/file.v'
@@ -1072,8 +1083,8 @@ pub:
 	mut_pos  token.Pos
 	comptime bool
 pub mut:
-	scope          &Scope = unsafe { nil }
-	obj            ScopeObject
+	scope          &Scope      = unsafe { nil }
+	obj            ScopeObject = empty_scope_object
 	mod            string
 	name           string
 	full_name      string
@@ -1111,7 +1122,7 @@ pub fn (i &Ident) is_auto_heap() bool {
 pub fn (i &Ident) is_mut() bool {
 	match i.obj {
 		Var { return i.obj.is_mut }
-		ConstField { return false }
+		ConstField, EmptyScopeObject { return false }
 		AsmRegister, GlobalField { return true }
 	}
 }
@@ -1567,7 +1578,7 @@ pub:
 	has_len       bool
 	has_cap       bool
 	has_init      bool
-	has_index     bool // true if temp variable index is used	
+	has_index     bool // true if temp variable index is used
 pub mut:
 	exprs        []Expr // `[expr, expr]` or `[expr]Type{}` for fixed array
 	len_expr     Expr   // len: expr
@@ -1836,6 +1847,12 @@ pub const s390x_with_number_register_list = {
 
 pub const ppc64le_no_number_register_list = []string{}
 pub const ppc64le_with_number_register_list = {
+	'f#': 32
+	'r#': 32
+}
+
+pub const loongarch64_no_number_register_list = []string{}
+pub const loongarch64_with_number_register_list = {
 	'f#': 32
 	'r#': 32
 }
@@ -2393,7 +2410,7 @@ pub fn (node Node) pos() token.Pos {
 				ConstField, GlobalField, Var {
 					return node.pos
 				}
-				AsmRegister {
+				EmptyScopeObject, AsmRegister {
 					return token.Pos{
 						len:       -1
 						line_nr:   -1
@@ -2541,7 +2558,7 @@ pub fn (node Node) children() []Node {
 	} else if node is ScopeObject {
 		match node {
 			GlobalField, ConstField, Var { children << node.expr }
-			AsmRegister {}
+			AsmRegister, EmptyScopeObject {}
 		}
 	} else {
 		match node {
@@ -2659,6 +2676,13 @@ pub fn all_registers(mut t Table, arch pref.Arch) map[string]ScopeObject {
 				res[k] = v
 			}
 		}
+		.loongarch64 {
+			loongarch64 := gen_all_registers(mut t, loongarch64_no_number_register_list,
+				loongarch64_with_number_register_list, 64)
+			for k, v in loongarch64 {
+				res[k] = v
+			}
+		}
 		.wasm32 {
 			// no registers
 		}
@@ -2709,6 +2733,15 @@ pub fn (expr Expr) is_reference() bool {
 			false
 		}
 	}
+}
+
+// remove_par removes all parenthesis and gets the innermost Expr
+pub fn (mut expr Expr) remove_par() Expr {
+	mut e := expr
+	for mut e is ParExpr {
+		e = e.expr
+	}
+	return e
 }
 
 // is `expr` a literal, i.e. it does not depend on any other declarations (C compile time constant)

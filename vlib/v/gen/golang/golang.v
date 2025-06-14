@@ -677,6 +677,8 @@ pub fn (mut f Gen) expr(node_ ast.Expr) {
 				.function { f.write('\$function') }
 				.option { f.write('\$option') }
 				.string { f.write('\$string') }
+				.pointer { f.write('\$pointer') }
+				.voidptr { f.write('\$voidptr') }
 			}
 		}
 	}
@@ -727,9 +729,7 @@ fn expr_is_single_line(expr ast.Expr) bool {
 pub fn (mut f Gen) assert_stmt(node ast.AssertStmt) {
 	f.write('assert ')
 	mut expr := node.expr
-	for mut expr is ast.ParExpr {
-		expr = expr.expr
-	}
+	expr = expr.remove_par()
 	f.expr(expr)
 	f.writeln('')
 }
@@ -2056,9 +2056,7 @@ pub fn (mut f Gen) par_expr(node ast.ParExpr) {
 		f.write('(')
 	}
 	mut expr := node.expr
-	for mut expr is ast.ParExpr {
-		expr = expr.expr
-	}
+	expr = expr.remove_par()
 	f.expr(expr)
 	if requires_paren {
 		f.par_level--

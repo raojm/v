@@ -143,6 +143,7 @@ pub fn gen(files []&ast.File, mut table ast.Table, pref_ &pref.Preferences) stri
 		graph.add(g.file.mod.name, imports)
 		// builtin types
 		if g.file.mod.name == 'builtin' && !g.generated_builtin {
+			g.gen_nil_const()
 			g.gen_builtin_type_defs()
 			g.writeln('Object.defineProperty(array.prototype,"len", { get: function() {return new int(this.arr.arr.length);}, set: function(l) { this.arr.arr.length = l.valueOf(); } }); ')
 			g.writeln('Object.defineProperty(map.prototype,"len", { get: function() {return new int(this.length);}, set: function(l) { } }); ')
@@ -871,8 +872,8 @@ fn (mut g JsGen) expr(node_ ast.Expr) {
 			g.gen_array_init_expr(node)
 		}
 		ast.AsCast {
-			// skip: JS has no types, so no need to cast
 			// TODO: Is jsdoc needed here for TS support?
+			g.expr(node.expr)
 		}
 		ast.Assoc {
 			// TODO
@@ -899,11 +900,7 @@ fn (mut g JsGen) expr(node_ ast.Expr) {
 			// TODO
 		}
 		ast.CharLiteral {
-			if !node.val.is_pure_ascii() {
-				g.write("new rune('${node.val}'.charCodeAt())")
-			} else {
-				g.write("new u8('${node.val}')")
-			}
+			g.write("new rune('${node.val}')")
 		}
 		ast.Comment {}
 		ast.ComptimeCall {
@@ -965,7 +962,7 @@ fn (mut g JsGen) expr(node_ ast.Expr) {
 			g.gen_lock_expr(node)
 		}
 		ast.Nil {
-			g.write('null')
+			g.write('nil__')
 		}
 		ast.NodeError {}
 		ast.None {
@@ -1331,7 +1328,7 @@ fn (mut g JsGen) gen_assign_stmt(stmt ast.AssignStmt, semicolon bool) {
 					g.expr(left.left)
 					g.write('.map[')
 					g.expr(left.index)
-					g.write('.\$toJS()] = ')
+					g.write('.\$toJS()] = { val: ')
 				} else {
 					g.write('.arr.set(')
 					g.write('new int(')
@@ -1345,7 +1342,7 @@ fn (mut g JsGen) gen_assign_stmt(stmt ast.AssignStmt, semicolon bool) {
 				g.expr(left)
 			}
 
-			is_ptr := stmt.op == .assign && stmt.left_types[i].is_ptr() && !array_set
+			is_ptr := stmt.op == .assign && stmt.right_types[i].is_ptr() && !array_set
 			if is_ptr {
 				g.write('.val')
 			}
@@ -1428,6 +1425,11 @@ fn (mut g JsGen) gen_assign_stmt(stmt ast.AssignStmt, semicolon bool) {
 			}
 			if array_set && !map_set {
 				g.write(')')
+			}
+			if left is ast.IndexExpr && left.is_map {
+				g.write(', key: ')
+				g.expr(left.index)
+				g.write(' }')
 			}
 			if semicolon {
 				if g.inside_loop {
@@ -1514,7 +1516,7 @@ fn (mut g JsGen) gen_enum_decl(it ast.EnumDecl) {
 		if field.has_expr && field.expr is ast.IntegerLiteral {
 			i = field.expr.val.int()
 		}
-		g.writeln('${i},')
+		g.writeln('new int(${i}),')
 		i++
 	}
 	g.dec_indent()
@@ -1710,9 +1712,13 @@ fn (mut g JsGen) gen_for_in_stmt(it ast.ForInStmt) {
 			g.writeln('for (var ${tmp2} in ${tmp}.map) {')
 
 			g.inc_indent()
-			g.writeln('let ${val} = ${tmp}.map[${tmp2}];')
-			g.writeln('let ${key} = ${tmp2};')
-
+			g.writeln('let ${val} = ${tmp}.map[${tmp2}].val;')
+			sym := g.table.sym(it.key_type)
+			if sym.is_number() {
+				g.writeln('let ${key} = new ${g.styp(it.key_type)}(+${tmp2})')
+			} else {
+				g.writeln('let ${key} = new ${g.styp(it.key_type)}(${tmp2})')
+			}
 			g.writeln('try { ')
 			g.inc_indent()
 			g.stmts(it.stmts)
@@ -1945,6 +1951,8 @@ fn (mut g JsGen) gen_struct_decl(node ast.StructDecl) {
 
 				if field.has_default_expr {
 					g.expr(field.default_expr)
+				} else if field.typ.has_flag(.option) {
+					g.write('none__')
 				} else {
 					g.write('${g.to_js_typ_val(field.typ)}')
 				}
@@ -2050,8 +2058,8 @@ fn (mut g JsGen) gen_array_init_expr(it ast.ArrayInit) {
 		g.writeln('(function(length) {')
 		g.inc_indent()
 		g.writeln('const ${t1} = [];')
-		g.write('for (let it = 0; it < length')
-		g.writeln('; it++) {')
+		g.write('for (let it = 0, index = 0; index < length')
+		g.writeln('; it++, index++) {')
 		g.inc_indent()
 		g.write('${t1}.push(')
 		if it.has_init {
@@ -3213,8 +3221,11 @@ fn (mut g JsGen) gen_map_init_expr(it ast.MapInit) {
 			g.write('[')
 			g.expr(key)
 			g.write('.\$toJS()]')
-			g.write(': ')
+			g.write(': { val: ')
 			g.expr(val)
+			g.write(', key: ')
+			g.expr(key)
+			g.write(' }')
 			if i < it.keys.len - 1 {
 				g.write(',')
 			}
@@ -3334,7 +3345,9 @@ fn (mut g JsGen) gen_string_inter_literal(it ast.StringInterLiteral) {
 
 fn (mut g JsGen) gen_string_literal(it ast.StringLiteral) {
 	text := it.val.replace("'", "'").replace('"', '\\"')
-	g.write('new string(')
+	if it.language != .js {
+		g.write('new string(')
+	}
 	if it.is_raw {
 		g.writeln('(function() { let s = String(); ')
 		for x in text {
@@ -3352,7 +3365,9 @@ fn (mut g JsGen) gen_string_literal(it ast.StringLiteral) {
 		}
 		g.write('"')
 	}
-	g.write(')')
+	if it.language != .js {
+		g.write(')')
+	}
 }
 
 fn (mut g JsGen) gen_struct_init(it ast.StructInit) {

@@ -1019,7 +1019,7 @@ fn test_bytes_to_string() {
 }
 
 fn test_charptr() {
-	foo := &char('VLANG'.str)
+	foo := &char(c'VLANG')
 	assert typeof(foo).name == '&char'
 	assert unsafe { foo.vstring() } == 'VLANG'
 	assert unsafe { foo.vstring_with_len(3) } == 'VLA'
@@ -1553,6 +1553,20 @@ fn test_string_is_ascii() {
 	assert 'a👋bc'.is_ascii() == false
 }
 
+fn test_string_is_identifier() {
+	assert ''.is_identifier() == false
+	assert ' '.is_identifier() == false
+	assert '~~'.is_identifier() == false
+	assert '_Az~'.is_identifier() == false
+	assert '_Aö~'.is_identifier() == false
+	assert '👋'.is_identifier() == false
+	assert 'a👋bc'.is_identifier() == false
+	assert '9'.is_identifier() == false
+	assert '_9'.is_identifier() == true
+	assert 'a 9'.is_identifier() == false
+	assert 't'.is_identifier() == true
+}
+
 fn test_string_with_zero_byte_escape() {
 	assert '\x00'.bytes() == [u8(0)]
 }
@@ -1598,7 +1612,7 @@ fn test_last_index() {
 	assert 'Zabcabca'.last_index('Z')? == 0
 	x := 'Zabcabca'.last_index('Y')
 	assert x == none
-	// TODO: `assert 'Zabcabca'.index_last('Y') == none` is a cgen error, 2023/12/04
+	assert 'Zabcabca'.last_index('Y') == none
 }
 
 fn test_last_index_u8() {

@@ -101,12 +101,12 @@ static char __CLOSURE_GET_DATA_BYTES[] = {
 
 #elif defined(__V_arm64)
 static char __closure_thunk[] = {
-	0x11, 0x00, 0xFE, 0x58,  // ldr x17, userdata
+	0x11, 0x00, 0xFE, 0x5C,  // ldr d17, userdata
 	0x30, 0x00, 0xFE, 0x58,  // ldr x16, fn
 	0x00, 0x02, 0x1F, 0xD6   // br  x16
 };
 static char __CLOSURE_GET_DATA_BYTES[] = {
-	0xE0, 0x03, 0x11, 0xAA,  // mov x0, x17
+	0x20, 0x02, 0x66, 0x9E,  // fmov x0, d17
 	0xC0, 0x03, 0x5F, 0xD6   // ret
 };
 #elif defined(__V_arm32)
@@ -138,10 +138,11 @@ static char __CLOSURE_GET_DATA_BYTES[] = {
 static char __closure_thunk[] = {
 	0x97, 0xCF, 0xFF, 0xFF,  // auipc t6, 0xffffc
 	0x03, 0xAF, 0x4F, 0x00,  // lw    t5, 4(t6)
+	0x07, 0xAB, 0x0F, 0x00,  // flw   fs6, 0(t6)
 	0x67, 0x00, 0x0F, 0x00   // jr    t5
 };
 static char __CLOSURE_GET_DATA_BYTES[] = {
-	0x03, 0xA5, 0x0F, 0x00,  // lw    a0, 0(t6)
+	0x53, 0x05, 0x0B, 0xE0,  // fmv.x.w a0, fs6
 	0x67, 0x80, 0x00, 0x00   // ret
 };
 #elif defined (__V_s390x)
@@ -170,6 +171,17 @@ static char __closure_thunk[] = {
 static char __CLOSURE_GET_DATA_BYTES[] = {
 	0x66, 0x00, 0xc3, 0x7d,	// mfvsrd %r3, %f14
 	0x20, 0x00, 0x80, 0x4e,	// blr
+};
+#elif defined (__V_loongarch64)
+static char __closure_thunk[] = {
+	0x92, 0xFF, 0xFF, 0x1D,  // pcaddu12i t6, -4
+	0x48, 0x02, 0x80, 0x2B,  // fld.d     f8, t6, 0
+	0x51, 0x22, 0xC0, 0x28,  // ld.d      t5, t6, 8
+	0x20, 0x02, 0x00, 0x4C,  // jr        t5
+};
+static char __CLOSURE_GET_DATA_BYTES[] = {
+	0x04, 0xB9, 0x14, 0x01,  // movfr2gr.d a0, f8
+	0x20, 0x00, 0x00, 0x4C,  // ret
 };
 #endif
 
@@ -300,7 +312,7 @@ ${static_non_parallel}void* __closure_create(void* fn, void* data) {
 const c_common_macros = '
 #define EMPTY_VARG_INITIALIZATION 0
 #define EMPTY_STRUCT_DECLARATION
-#define EMPTY_STRUCT_INITIALIZATION
+#define E_STRUCT
 // Due to a tcc bug, the length of an array needs to be specified, but GCC crashes if it is...
 #define EMPTY_ARRAY_OF_ELEMS(x,n) (x[])
 #define TCCSKIP(x) x
@@ -357,6 +369,12 @@ const c_common_macros = '
 	#define __V_architecture 8
 #endif
 
+#if defined(__loongarch64)
+	#define __V_loongarch64  1
+	#undef __V_architecture
+	#define __V_architecture 9
+#endif
+
 // Using just __GNUC__ for detecting gcc, is not reliable because other compilers define it too:
 #ifdef __GNUC__
 	#define __V_GCC__
@@ -374,9 +392,9 @@ const c_common_macros = '
 #ifdef _MSC_VER
 	#undef __V_GCC__
 	#undef EMPTY_STRUCT_DECLARATION
-	#undef EMPTY_STRUCT_INITIALIZATION
+	#undef E_STRUCT
 	#define EMPTY_STRUCT_DECLARATION unsigned char _dummy_pad
-	#define EMPTY_STRUCT_INITIALIZATION 0
+	#define E_STRUCT 0
 #endif
 
 #ifndef _WIN32
@@ -393,9 +411,9 @@ const c_common_macros = '
 #ifdef __TINYC__
 	#define _Atomic volatile
 	#undef EMPTY_STRUCT_DECLARATION
-	#undef EMPTY_STRUCT_INITIALIZATION
+	#undef E_STRUCT
 	#define EMPTY_STRUCT_DECLARATION unsigned char _dummy_pad
-	#define EMPTY_STRUCT_INITIALIZATION 0
+	#define E_STRUCT 0
 	#undef EMPTY_ARRAY_OF_ELEMS
 	#define EMPTY_ARRAY_OF_ELEMS(x,n) (x[n])
 	#undef __NOINLINE
@@ -406,9 +424,7 @@ const c_common_macros = '
 	#undef TCCSKIP
 	#define TCCSKIP(x)
 	// #include <byteswap.h>
-	#ifndef _WIN32
-		int tcc_backtrace(const char *fmt, ...);
-	#endif
+	int tcc_backtrace(const char *fmt, ...);
 #endif
 
 // Use __offsetof_ptr instead of __offset_of, when you *do* have a valid pointer, to avoid UB:
@@ -428,8 +444,8 @@ const c_common_macros = '
 #define OPTION_CAST(x) (x)
 
 #if defined(_WIN32) || defined(__CYGWIN__)
-	#define VV_EXPORTED_SYMBOL extern __declspec(dllexport)
-	#define VV_LOCAL_SYMBOL static
+	#define VV_EXP extern __declspec(dllexport)
+	#define VV_LOC static
 #else
 	// 4 < gcc < 5 is used by some older Ubuntu LTS and Centos versions,
 	// and does not support __has_attribute(visibility) ...
@@ -438,18 +454,18 @@ const c_common_macros = '
 	#endif
 	#if (defined(__GNUC__) && (__GNUC__ >= 4)) || (defined(__clang__) && __has_attribute(visibility))
 		#ifdef ARM
-			#define VV_EXPORTED_SYMBOL  extern __attribute__((externally_visible,visibility("default")))
+			#define VV_EXP  extern __attribute__((externally_visible,visibility("default")))
 		#else
-			#define VV_EXPORTED_SYMBOL  extern __attribute__((visibility("default")))
+			#define VV_EXP  extern __attribute__((visibility("default")))
 		#endif
 		#if defined(__clang__) && (defined(_VUSECACHE) || defined(_VBUILDMODULE))
-			#define VV_LOCAL_SYMBOL static
+			#define VV_LOC static
 		#else
-			#define VV_LOCAL_SYMBOL  __attribute__ ((visibility ("hidden")))
+			#define VV_LOC  __attribute__ ((visibility ("hidden")))
 		#endif
 	#else
-		#define VV_EXPORTED_SYMBOL extern
-		#define VV_LOCAL_SYMBOL static
+		#define VV_EXP extern
+		#define VV_LOC static
 	#endif
 #endif
 
@@ -553,7 +569,7 @@ const c_helper_macros = '//============================== HELPER C MACROS ======
 // _SLIT0 is used as NULL string for literal arguments
 // `"" s` is used to enforce a string literal argument
 #define _SLIT0 (string){.str=(byteptr)(""), .len=0, .is_lit=1}
-#define _SLIT(s) ((string){.str=(byteptr)("" s), .len=(sizeof(s)-1), .is_lit=1})
+#define _S(s) ((string){.str=(byteptr)("" s), .len=(sizeof(s)-1), .is_lit=1})
 #define _SLEN(s, n) ((string){.str=(byteptr)("" s), .len=n, .is_lit=1})
 // optimized way to compare literal strings
 #define _SLIT_EQ(sptr, slen, lit) (slen == sizeof("" lit)-1 && !vmemcmp(sptr, "" lit, slen))
@@ -587,8 +603,8 @@ void _vcleanup(void);
 #ifdef _WIN32
 	// workaround for windows, export _vinit_caller/_vcleanup_caller, let dl.open()/dl.close() call it
 	// NOTE: This is hardcoded in vlib/dl/dl_windows.c.v!
-	VV_EXPORTED_SYMBOL void _vinit_caller();
-	VV_EXPORTED_SYMBOL void _vcleanup_caller();
+	VV_EXP void _vinit_caller();
+	VV_EXP void _vcleanup_caller();
 #endif
 #define sigaction_size sizeof(sigaction);
 #define _ARR_LEN(a) ( (sizeof(a)) / (sizeof(a[0])) )
@@ -714,7 +730,7 @@ static void* g_live_info = NULL;
 
 const c_builtin_types = '
 //================================== builtin types ================================*/
-#if defined(__x86_64__) || defined(_M_AMD64) || defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64) || (defined(__riscv_xlen) && __riscv_xlen == 64) || defined(__s390x__) || (defined(__powerpc64__) && defined(__LITTLE_ENDIAN__))
+#if defined(__x86_64__) || defined(_M_AMD64) || defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64) || (defined(__riscv_xlen) && __riscv_xlen == 64) || defined(__s390x__) || (defined(__powerpc64__) && defined(__LITTLE_ENDIAN__)) || defined(__loongarch64)
 typedef int64_t vint_t;
 #else
 typedef int32_t vint_t;

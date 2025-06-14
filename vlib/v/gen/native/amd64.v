@@ -212,6 +212,10 @@ fn (mut c Amd64) cmp(reg Amd64Register, size Size, val i64) {
 	c.g.println('cmp ${reg}, ${val}')
 }
 
+fn (mut c Amd64) cmp_reg2(reg Register, reg2 Register) {
+	c.cmp_reg(reg as Amd64Register, reg2 as Amd64Register)
+}
+
 // `cmp rax, rbx`
 fn (mut c Amd64) cmp_reg(reg Amd64Register, reg2 Amd64Register) {
 	match reg {
@@ -290,6 +294,9 @@ fn (mut c Amd64) cmp_zero(reg Register) {
 }
 
 fn (mut c Amd64) cmp_var_reg(var Var, reg Register, config VarConfig) {
+	if reg as Amd64Register != .rax {
+		c.g.n_error('${@LOCATION} register ${reg} is not supported')
+	}
 	match var {
 		ast.Ident {
 			var_object := c.g.get_var_from_ident(var)
@@ -303,6 +310,9 @@ fn (mut c Amd64) cmp_var_reg(var Var, reg Register, config VarConfig) {
 				Register {
 					// TODO
 					// g.cmp()
+				}
+				ExternVar {
+					c.cmp_var_reg(var_object as ExternVar, reg, config)
 				}
 			}
 		}
@@ -323,6 +333,9 @@ fn (mut c Amd64) cmp_var_reg(var Var, reg Register, config VarConfig) {
 		GlobalVar {
 			// TODO
 		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
 	}
 }
 
@@ -340,6 +353,9 @@ fn (mut c Amd64) cmp_var(var Var, val i32, config VarConfig) {
 				Register {
 					// TODO
 					// g.cmp()
+				}
+				ExternVar {
+					c.cmp_var(var_object as ExternVar, val, config)
 				}
 			}
 		}
@@ -360,6 +376,9 @@ fn (mut c Amd64) cmp_var(var Var, val i32, config VarConfig) {
 		GlobalVar {
 			// TODO
 		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
 	}
 }
 
@@ -378,6 +397,9 @@ fn (mut c Amd64) dec_var(var Var, config VarConfig) {
 				Register {
 					// TODO
 					// g.dec()
+				}
+				ExternVar {
+					c.dec_var(var_object as ExternVar, config)
 				}
 			}
 		}
@@ -398,6 +420,9 @@ fn (mut c Amd64) dec_var(var Var, config VarConfig) {
 		GlobalVar {
 			// TODO
 		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
 	}
 }
 
@@ -417,6 +442,9 @@ fn (mut c Amd64) inc_var(var Var, config VarConfig) {
 					c.g.n_error('${@LOCATION} Register incrementation is not supported yet')
 					// TODO
 					// g.inc()
+				}
+				ExternVar {
+					c.inc_var(var_object as ExternVar, config)
 				}
 			}
 		}
@@ -460,6 +488,9 @@ fn (mut c Amd64) inc_var(var Var, config VarConfig) {
 		GlobalVar {
 			c.g.n_error('${@LOCATION} Global variables incrementation is not supported yet')
 			// TODO
+		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
 		}
 	}
 }
@@ -624,7 +655,7 @@ fn (mut c Amd64) mov_deref(r Register, rptr Register, typ ast.Type) {
 		})
 	}
 	c.g.write8(i32(reg) % 8 * 8 + i32(regptr) % 8)
-	c.g.println('mov ${reg}, [${regptr}]')
+	c.g.println('mov ${reg}, [${regptr}]; size ${size}')
 }
 
 fn (mut c Amd64) mov_store(regptr Amd64Register, reg Amd64Register, size Size) {
@@ -654,6 +685,9 @@ fn (mut c Amd64) mov_reg_to_var(var Var, r Register, config VarConfig) {
 				Register {
 					// TODO
 					c.g.n_error('${@LOCATION} unsupported Ident Register')
+				}
+				ExternVar {
+					c.mov_reg_to_var(var_object as ExternVar, reg, config)
 				}
 			}
 		}
@@ -736,6 +770,9 @@ fn (mut c Amd64) mov_reg_to_var(var Var, r Register, config VarConfig) {
 			// TODO
 			c.g.n_error('${@LOCATION} Unsupported GlobalVar')
 		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
 	}
 }
 
@@ -752,6 +789,9 @@ fn (mut c Amd64) mov_int_to_var(var Var, integer i32, config VarConfig) {
 				}
 				Register {
 					// TODO
+				}
+				ExternVar {
+					c.mov_int_to_var(var_object as ExternVar, integer, config)
 				}
 			}
 		}
@@ -815,6 +855,9 @@ fn (mut c Amd64) mov_int_to_var(var Var, integer i32, config VarConfig) {
 		GlobalVar {
 			// TODO
 		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
 	}
 }
 
@@ -860,6 +903,9 @@ fn (mut c Amd64) mov_var_to_reg(reg Register, var Var, config VarConfig) {
 				}
 				Register {
 					// TODO
+				}
+				ExternVar {
+					c.mov_var_to_reg(reg, var_object as ExternVar, config)
 				}
 			}
 		}
@@ -925,6 +971,9 @@ fn (mut c Amd64) mov_var_to_reg(reg Register, var Var, config VarConfig) {
 		}
 		GlobalVar {
 			c.g.n_error('${@LOCATION} Unsupported GlobalVar')
+		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
 		}
 	}
 }
@@ -1006,6 +1055,9 @@ fn (mut c Amd64) extern_call(addr i32) {
 			c.g.write8(0x15)
 			c.g.write32(addr)
 			c.g.println('call QWORD [rip + 0xffffffff${int(addr).hex()}]')
+		}
+		.macos {
+			eprintln('## TODO, macos, extern_call, addr: ${addr}')
 		}
 		else {
 			c.g.n_error('${@LOCATION} extern calls not implemented for ${c.g.pref.os}')
@@ -1095,8 +1147,12 @@ fn (mut c Amd64) push(r Register) {
 		c.g.write8(0x50 + i32(reg) - 8)
 	}
 	c.is_16bit_aligned = !c.is_16bit_aligned
-	c.g.println('push ${reg}')
 	c.g.stack_depth++
+	c.g.println('push ${reg}; stack_depth:${c.g.stack_depth}')
+}
+
+fn (mut c Amd64) pop2(r Register) {
+	c.pop(r as Amd64Register)
 }
 
 pub fn (mut c Amd64) pop(reg Amd64Register) {
@@ -1105,8 +1161,8 @@ pub fn (mut c Amd64) pop(reg Amd64Register) {
 	}
 	c.g.write8(0x58 + i32(reg) % 8)
 	c.is_16bit_aligned = !c.is_16bit_aligned
-	c.g.println('pop ${reg}')
 	c.g.stack_depth--
+	c.g.println('pop ${reg} ; stack_depth:${c.g.stack_depth}')
 }
 
 pub fn (mut c Amd64) sub8(reg Amd64Register, val i32) {
@@ -1668,6 +1724,12 @@ fn (mut c Amd64) sub_reg(a Amd64Register, b Amd64Register) {
 	c.g.println('sub ${a}, ${b}')
 }
 
+fn (mut c Amd64) add_reg2(a_reg Register, b_reg Register) {
+	a := a_reg as Amd64Register
+	b := b_reg as Amd64Register
+	c.add_reg(a, b)
+}
+
 fn (mut c Amd64) add_reg(a Amd64Register, b Amd64Register) {
 	if i32(a) <= i32(Amd64Register.r15) && i32(b) <= i32(Amd64Register.r15) {
 		c.g.write8(0x48 + if i32(a) >= i32(Amd64Register.r8) { i32(1) } else { i32(0) } +
@@ -1757,7 +1819,7 @@ fn (mut c Amd64) sar8(r Amd64Register, val u8) {
 pub fn (mut c Amd64) call_fn(node ast.CallExpr) {
 	name := node.name
 	mut n := name
-	if !n.contains('.') {
+	if !n.contains('.') && n !in c.g.fn_names { // if the name is in keys, it is a function from builtin
 		n = 'main.${n}'
 	}
 	if node.is_method {
@@ -1847,7 +1909,8 @@ pub fn (mut c Amd64) call_fn(node ast.CallExpr) {
 			continue
 		}
 		c.g.expr(args[i].expr)
-		if c.g.table.sym(args[i].typ).kind == .struct && !args[i].typ.is_ptr() {
+		if (c.g.table.sym(args[i].typ).kind == .struct || args[i].typ.is_string())
+			&& !args[i].typ.is_ptr() {
 			match args_size[i] {
 				1...8 {
 					c.mov_deref(Amd64Register.rax, Amd64Register.rax, ast.i64_type_idx)
@@ -1866,7 +1929,7 @@ pub fn (mut c Amd64) call_fn(node ast.CallExpr) {
 						c.bitand_reg(.rdx, .rbx)
 					}
 				}
-				else {}
+				else {} // handled below
 			}
 		}
 		if is_floats[i] {
@@ -2056,19 +2119,34 @@ fn (mut c Amd64) assign_var(var IdentVar, raw_type ast.Type) {
 	size := c.g.get_type_size(typ)
 	if typ.is_pure_float() {
 		match var {
-			LocalVar { c.mov_ssereg_to_var(var as LocalVar, .xmm0) }
-			GlobalVar { c.mov_ssereg_to_var(var as GlobalVar, .xmm0) }
+			LocalVar {
+				c.mov_ssereg_to_var(var as LocalVar, .xmm0)
+			}
+			GlobalVar {
+				c.mov_ssereg_to_var(var as GlobalVar, .xmm0)
+			}
 			// Amd64Register { c.g.mov_ssereg(var as Amd64Register, .xmm0) }
-			else {}
+			else {
+				c.g.n_error('${@LOCATION} unsupported var type ${var}')
+			}
 		}
 	} else if info is ast.Struct && !typ.is_any_kind_of_pointer()
 		&& !raw_type.is_any_kind_of_pointer() {
 		c.assign_struct_var(var, typ, size)
 	} else if int(size) in [1, 2, 4, 8] {
 		match var {
-			LocalVar { c.mov_reg_to_var(var as LocalVar, Amd64Register.rax) }
-			GlobalVar { c.mov_reg_to_var(var as GlobalVar, Amd64Register.rax) }
-			Register { c.mov_reg(var as Amd64Register, Amd64Register.rax) }
+			LocalVar {
+				c.mov_reg_to_var(var as LocalVar, Amd64Register.rax)
+			}
+			GlobalVar {
+				c.mov_reg_to_var(var as GlobalVar, Amd64Register.rax)
+			}
+			Register {
+				c.mov_reg(var as Amd64Register, Amd64Register.rax)
+			}
+			ExternVar {
+				c.mov_reg_to_var(var as ExternVar, Amd64Register.rax)
+			}
 		}
 	} else {
 		c.g.n_error('${@LOCATION} error assigning type ${typ} with size ${size}: ${info}')
@@ -2098,6 +2176,12 @@ fn (mut c Amd64) assign_ident_int_lit(node ast.AssignStmt, i i32, int_lit ast.In
 			c.mov_var_to_reg(Amd64Register.rax, left)
 			c.mov64(Amd64Register.rdx, i64(int_lit.val.int()))
 			c.div_reg(.rax, .rdx)
+			c.mov_reg_to_var(left, Amd64Register.rax)
+		}
+		.mod_assign {
+			c.mov_var_to_reg(Amd64Register.rax, left)
+			c.mov64(Amd64Register.rdx, i64(int_lit.val.int()))
+			c.mod_reg(.rax, .rdx)
 			c.mov_reg_to_var(left, Amd64Register.rax)
 		}
 		.decl_assign {
@@ -2193,6 +2277,15 @@ fn (mut c Amd64) mov_float_xmm0_var(reg Amd64Register, var_type ast.Type) {
 	}
 }
 
+fn (mut c Amd64) create_string_struct(typ ast.Type, name string, str string) i32 {
+	dest := c.allocate_var(name, c.g.get_type_size(typ), i64(0))
+	c.learel(Amd64Register.rsi, c.g.allocate_string(str, 3, .rel32))
+	c.mov_reg_to_var(LocalVar{dest, ast.u64_type_idx, name}, Amd64Register.rsi)
+	offset := c.g.get_field_offset(typ, 'len')
+	c.mov_int_to_var(LocalVar{dest, ast.i32_type_idx, name}, i32(str.len), offset: offset)
+	return dest
+}
+
 fn (mut c Amd64) assign_ident_right_expr(node ast.AssignStmt, i i32, right ast.Expr, name string, ident ast.Ident) {
 	match right {
 		ast.IntegerLiteral {
@@ -2211,22 +2304,28 @@ fn (mut c Amd64) assign_ident_right_expr(node ast.AssignStmt, i i32, right ast.E
 			val := enum_info.fields[right.val] or {
 				c.g.n_error('${@LOCATION} enum field not found ${right.val}')
 			}
-			if node.op == .decl_assign {
-				c.allocate_var(ident.name, enum_info.size, val)
-			} else {
-				c.mov64(Amd64Register.rax, val)
-				c.mov_reg_to_var(ident, Amd64Register.rax)
+			match val {
+				Number {
+					if node.op == .decl_assign {
+						c.allocate_var(ident.name, enum_info.size, val)
+					} else {
+						c.mov64(Amd64Register.rax, val)
+						c.mov_reg_to_var(ident, Amd64Register.rax)
+					}
+				}
+				ast.Expr {
+					c.g.expr(val)
+					c.mov_reg_to_var(ident, Amd64Register.rax)
+				}
 			}
 		}
 		ast.FloatLiteral {
 			c.assign_float(node, i, right, ident)
 		}
 		ast.StringLiteral {
-			dest := c.allocate_var(name, 8, i64(0))
 			ie := right as ast.StringLiteral
 			str := c.g.eval_str_lit_escape_codes(ie)
-			c.learel(Amd64Register.rsi, c.g.allocate_string(str, 3, .rel32))
-			c.mov_reg_to_var(LocalVar{dest, ast.u64_type_idx, name}, Amd64Register.rsi)
+			c.create_string_struct(node.right_types[0], name, str)
 		}
 		ast.StructInit {
 			match node.op {
@@ -2749,14 +2848,35 @@ fn (mut c Amd64) assign_stmt(node ast.AssignStmt) {
 				c.pop(.rdx) // effective address of left expr
 				c.gen_type_promotion(node.right_types[0], var_type)
 
+				size := match c.g.get_type_size(var_type) {
+					1 { Size._8 }
+					2 { Size._16 }
+					4 { Size._32 }
+					else { Size._64 }
+				}
 				match node.op {
 					.decl_assign, .assign {
-						c.mov_store(.rdx, .rax, match c.g.get_type_size(var_type) {
-							1 { ._8 }
-							2 { ._16 }
-							4 { ._32 }
-							else { ._64 }
-						})
+						c.mov_store(.rdx, .rax, size)
+					}
+					.plus_assign {
+						c.mov_deref(Amd64Register.rcx, Amd64Register.rdx, var_type)
+						c.add_reg(.rax, .rcx)
+						c.mov_store(.rdx, .rax, size)
+					}
+					.minus_assign {
+						c.mov_deref(Amd64Register.rcx, Amd64Register.rdx, var_type)
+						c.sub_reg(.rax, .rcx)
+						c.mov_store(.rdx, .rax, size)
+					}
+					.and_assign {
+						c.mov_deref(Amd64Register.rcx, Amd64Register.rdx, var_type)
+						c.bitand_reg(.rax, .rcx)
+						c.mov_store(.rdx, .rax, size)
+					}
+					.mod_assign {
+						c.mov_deref(Amd64Register.rcx, Amd64Register.rdx, var_type)
+						c.mod_reg(.rax, .rcx)
+						c.mov_store(.rdx, .rax, size)
 					}
 					else {
 						c.g.n_error('${@LOCATION} Unsupported assign instruction (${node.op})')
@@ -3394,7 +3514,7 @@ fn (mut c Amd64) fn_decl(node ast.FnDecl) {
 		}
 	}
 
-	params << node.params
+	params << node.params // also the var of the method
 
 	args_size := params.map(c.g.get_type_size(it.typ))
 	is_floats := params.map(it.typ.is_pure_float())
@@ -3601,7 +3721,7 @@ pub fn (mut c Amd64) allocate_var(name string, size i32, initial_val Number) i32
 	}
 
 	// println('allocate_var(size=$size, initial_val=$initial_val)')
-	c.g.println('mov [rbp-${int(n).hex2()}], ${initial_val} ; Allocate var `${name}`')
+	c.g.println('mov [rbp-${int(n).hex2()}], ${initial_val} ; Allocate var `${name}` size: ${size}')
 	return c.g.stack_var_pos
 }
 
@@ -3648,6 +3768,9 @@ fn (mut c Amd64) init_struct(var Var, init ast.StructInit) {
 					// TODO
 					// c.g.cmp()
 				}
+				ExternVar {
+					c.init_struct(var_object as ExternVar, init)
+				}
 			}
 		}
 		LocalVar {
@@ -3671,18 +3794,57 @@ fn (mut c Amd64) init_struct(var Var, init ast.StructInit) {
 				else {}
 			}
 			for f in init.init_fields {
+				c.g.println('; ${var.name}.${f.name}')
 				field := ts.find_field(f.name) or {
 					c.g.n_error('${@LOCATION} Could not find field `${f.name}` on init (${ts.info})')
 				}
-				offset := c.g.structs[typ.idx()].offsets[field.i]
+				f_offset := c.g.structs[typ.idx()].offsets[field.i]
+				f_ts := c.g.table.sym(field.typ)
 
 				c.g.expr(f.expr)
-				// TODO: expr not on rax
-				c.mov_reg_to_var(var, Amd64Register.rax, offset: offset, typ: field.typ)
+				if f_ts.info is ast.Struct {
+					c.copy_struct_to_struct(field, f_offset, 0, var)
+				} else {
+					// TODO: expr not on rax -> may be done
+					c.mov_reg_to_var(var, Amd64Register.rax, offset: f_offset, typ: field.typ)
+				}
 			}
 		}
 		GlobalVar {
 			c.g.n_error('${@LOCATION} GlobalVar not implemented for ast.StructInit')
+		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
+	}
+}
+
+// f_offset is the offset of the field in the root struct
+// data_offset is the offset to add to rax to find the data
+// needs rax to hold the address of the root field data
+fn (mut c Amd64) copy_struct_to_struct(field ast.StructField, f_offset i32, data_offset i32, var LocalVar) {
+	f_typ_idx := field.typ.idx()
+	f_ts := c.g.table.sym(field.typ)
+
+	for f2 in (f_ts.info as ast.Struct).fields {
+		c.g.println('; ${var.name}. ... .${f2.name}')
+		field2 := f_ts.find_field(f2.name) or {
+			c.g.n_error('${@LOCATION} Could not find field `${f2.name}` on init (${f_ts.info})')
+		}
+		f2_offset := c.g.structs[f_typ_idx].offsets[field2.i]
+		f2_ts := c.g.table.sym(field2.typ)
+
+		if f2_ts.info is ast.Struct {
+			c.copy_struct_to_struct(field2, f_offset + f2_offset, data_offset + f2_offset,
+				var)
+		} else {
+			c.mov_reg(Amd64Register.rdx, Amd64Register.rax)
+			c.add(Amd64Register.rdx, data_offset + f2_offset)
+			c.mov_deref(Amd64Register.rdx, Amd64Register.rdx, field2.typ)
+			c.mov_reg_to_var(var, Amd64Register.rdx,
+				offset: f_offset + f2_offset
+				typ:    field2.typ
+			)
 		}
 	}
 }
@@ -3702,6 +3864,9 @@ fn (mut c Amd64) init_array(var Var, node ast.ArrayInit) {
 					// TODO
 					// c.g.cmp()
 				}
+				ExternVar {
+					c.init_array(var_object as ExternVar, node)
+				}
 			}
 		}
 		LocalVar {
@@ -3714,6 +3879,9 @@ fn (mut c Amd64) init_array(var Var, node ast.ArrayInit) {
 		}
 		GlobalVar {
 			c.g.n_error('${@LOCATION} GlobalVar not implemented for ast.ArrayInit')
+		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
 		}
 	}
 }
@@ -4011,6 +4179,9 @@ fn (mut c Amd64) mov_ssereg_to_var(var Var, reg Amd64SSERegister, config VarConf
 					c.mov_ssereg_to_var(var_object as GlobalVar, reg, config)
 				}
 				Register {}
+				ExternVar {
+					c.mov_ssereg_to_var(var_object as ExternVar, reg, config)
+				}
 			}
 		}
 		LocalVar {
@@ -4036,6 +4207,9 @@ fn (mut c Amd64) mov_ssereg_to_var(var Var, reg Amd64SSERegister, config VarConf
 		GlobalVar {
 			// TODO
 		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
+		}
 	}
 }
 
@@ -4055,6 +4229,9 @@ fn (mut c Amd64) mov_var_to_ssereg(reg Amd64SSERegister, var Var, config VarConf
 					c.mov_var_to_ssereg(reg, var_object as GlobalVar, config)
 				}
 				Register {}
+				ExternVar {
+					c.mov_var_to_ssereg(reg, var_object as ExternVar, config)
+				}
 			}
 		}
 		LocalVar {
@@ -4079,6 +4256,9 @@ fn (mut c Amd64) mov_var_to_ssereg(reg Amd64SSERegister, var Var, config VarConf
 		}
 		GlobalVar {
 			// TODO
+		}
+		ExternVar {
+			c.g.n_error('${@LOCATION} unsupported var type ${var}')
 		}
 	}
 }

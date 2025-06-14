@@ -1,15 +1,29 @@
 module runtime
 
-fn free_memory_impl() usize {
+#include <sys/sysctl.h>
+#include <uvm/uvmexp.h>
+
+struct C.uvmexp {
+	pagesize int
+	free     int
+}
+
+fn free_memory_impl() !usize {
 	$if cross ? {
-		return 1
+		return error('free_memory: not implemented')
 	}
 	$if !cross ? {
 		$if openbsd {
-			page_size := usize(C.sysconf(C._SC_PAGESIZE))
-			av_phys_pages := usize(C.sysconf(C._SC_AVPHYS_PAGES))
-			return page_size * av_phys_pages
+			mib := [C.CTL_VM, C.VM_UVMEXP]!
+			mut uvm := C.uvmexp{0, 0}
+			mut len := usize(sizeof(C.uvmexp))
+			retval := unsafe { C.sysctl(&mib[0], mib.len, &uvm, &len, C.NULL, 0) }
+			c_errno := C.errno
+			if retval == -1 {
+				return error('free_memory: `C.sysctl()` return error code = ${c_errno}')
+			}
+			return usize(uvm.pagesize) * usize(uvm.free)
 		}
 	}
-	return 1
+	return error('free_memory: not implemented')
 }

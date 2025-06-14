@@ -5,6 +5,7 @@ module native
 
 import v.ast
 import v.util
+import v.errors
 
 fn (mut g Gen) expr(node ast.Expr) {
 	match node {
@@ -27,9 +28,6 @@ fn (mut g Gen) expr(node ast.Expr) {
 				'C.syscall' {
 					g.code_gen.gen_syscall(node)
 				}
-				'exit' {
-					g.code_gen.gen_exit(node.args[0].expr)
-				}
 				'println', 'print', 'eprintln', 'eprint' {
 					expr := node.args[0].expr
 					typ := node.args[0].typ
@@ -49,6 +47,9 @@ fn (mut g Gen) expr(node ast.Expr) {
 			match var {
 				LocalVar {
 					g.local_var_ident(node, var)
+				}
+				ExternVar {
+					g.extern_var_ident(var)
 				}
 				else {
 					g.n_error('${@LOCATION} Unsupported variable kind')
@@ -81,7 +82,8 @@ fn (mut g Gen) expr(node ast.Expr) {
 		}
 		ast.StringLiteral {
 			str := g.eval_str_lit_escape_codes(node)
-			g.allocate_string(str, 3, .rel32)
+			pos := g.code_gen.create_string_struct(ast.string_type_idx, 'str_lit', str)
+			g.code_gen.lea_var_to_reg(g.code_gen.main_reg(), pos)
 		}
 		ast.CharLiteral {
 			bytes := g.eval_escape_codes(node.val)
@@ -117,7 +119,14 @@ fn (mut g Gen) expr(node ast.Expr) {
 			val := g.enum_vals[type_name].fields[node.val] or {
 				g.n_error('${@LOCATION} enum field not found ${node.val}')
 			}
-			g.code_gen.mov64(g.code_gen.main_reg(), val)
+			match val {
+				Number {
+					g.code_gen.mov64(g.code_gen.main_reg(), val)
+				}
+				ast.Expr {
+					g.expr(val)
+				}
+			}
 		}
 		ast.UnsafeExpr {
 			g.expr(node.expr)
@@ -131,8 +140,31 @@ fn (mut g Gen) expr(node ast.Expr) {
 		ast.SizeOf {
 			g.gen_sizeof_expr(node)
 		}
+		ast.IndexExpr {
+			if node.left_type.is_string() {
+				g.expr(node.index)
+				g.code_gen.push(Amd64Register.rax)
+
+				g.expr(node.left) // load address of string struct
+				g.code_gen.mov_deref(Amd64Register.rax, Amd64Register.rax, ast.u64_type_idx) // load value of the str pointer
+
+				g.code_gen.pop2(Amd64Register.rdx) // index
+				g.code_gen.add_reg2(Amd64Register.rax, Amd64Register.rdx) // add the offset to the address
+				g.code_gen.mov_deref(Amd64Register.rax, Amd64Register.rax, ast.u8_type_idx)
+			} else if node.left_type.is_pointer() {
+				dump(node)
+				g.n_error('${@LOCATION} expr: unhandled node type: Index expr is not applied on string')
+			} else {
+				g.n_error('${@LOCATION} expr: unhandled node type: Index expr is not applied on string')
+			}
+		}
 		else {
-			g.n_error('${@LOCATION} expr: unhandled node type: ${node.type_name()}')
+			util.show_compiler_message('error', errors.CompilerMessage{
+				message:   'detail'
+				file_path: g.current_file.path
+				pos:       node.pos()
+			})
+			g.n_error('${@LOCATION} expr: unhandled node type: ${node.type_name()} ${node}')
 		}
 	}
 }
@@ -155,6 +187,19 @@ fn (mut g Gen) local_var_ident(ident ast.Ident, var LocalVar) {
 				g.n_error('${@LOCATION} Unsupported variable type')
 			}
 		}
+	}
+}
+
+fn (mut g Gen) extern_var_ident(var ExternVar) {
+	if g.pref.os == .linux {
+		main_reg := g.code_gen.main_reg()
+		g.extern_vars[g.pos()] = var.name
+		g.code_gen.mov64(main_reg, Number(i64(0)))
+		g.code_gen.mov_deref(main_reg, main_reg, ast.u64_type_idx)
+	} else if g.pref.os == .macos {
+		eprintln('## TODO, macos, extern_var_ident, var: ${var}')
+	} else {
+		g.n_error('${@LOCATION} unsupported os for ${var}')
 	}
 }
 
@@ -454,9 +499,12 @@ fn (mut g Gen) gen_selector_expr(expr ast.SelectorExpr) {
 		g.code_gen.add(main_reg, offset)
 	}
 	if expr.next_token != .dot { // the deref needs to be on the last selector (that has no . after it)
-		g.code_gen.mov_deref(main_reg, main_reg, expr.typ)
+		ts := g.table.sym(expr.typ)
+		if ts.info !is ast.Struct {
+			g.code_gen.mov_deref(main_reg, main_reg, expr.typ)
+		}
 	}
-	g.println('; .${expr.field_name} {')
+	g.println('; .${expr.field_name} }')
 }
 
 fn (mut g Gen) gen_left_value(node ast.Expr) {

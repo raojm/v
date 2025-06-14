@@ -1,10 +1,19 @@
 module big
 
+import math
 import math.bits
 import strings
 import strconv
 
 const digit_array = '0123456789abcdefghijklmnopqrstuvwxyz'.bytes()
+// vfmt off
+const radix_options = {
+	2: 31, 3: 20, 4: 15, 5: 13, 6: 12, 7: 11, 8: 10, 9: 10, 10: 9,
+	11: 9, 12: 8, 13: 8, 14: 8, 15: 8, 16: 7, 17: 7, 18: 7, 19: 7,
+	20: 7, 21: 7, 22: 7, 23: 7, 24: 6, 25: 6, 26: 6, 27: 6, 28: 6,
+	29: 6, 30: 6, 31: 6, 32: 6, 33: 6, 34: 6, 35: 6, 36: 6
+}
+// vfmt on
 
 // big.Integer
 // -----------
@@ -264,19 +273,32 @@ fn integer_from_regular_string(characters string, radix u32) Integer {
 
 	mut result := zero_int
 	radix_int := integer_from_u32(radix)
-
-	for index := start_index; index < characters.len; index++ {
-		digit := characters[index]
-		value := digit_array.index(digit)
-
-		result *= radix_int
-		result += integer_from_int(value)
+	pow := radix_options[int(radix)]
+	radix_pow := radix_int.pow(u32(pow))
+	for i := start_index; i < characters.len; i += pow {
+		end := math.min(i + pow, characters.len)
+		num_str := characters[i..end]
+		if num_str.len == pow {
+			result *= radix_pow
+		} else {
+			result *= radix_int.pow(u32(num_str.len))
+		}
+		result += integer_from_u32(regular_string_to_radix(num_str, radix))
 	}
 
 	return Integer{
 		digits: result.digits.clone()
 		signum: result.signum * signum
 	}
+}
+
+fn regular_string_to_radix(characters string, radix u32) u32 {
+	mut result := u32(0)
+
+	for c in characters {
+		result = result * radix + u32(digit_array.index(c))
+	}
+	return result
 }
 
 // abs returns the absolute value of the integer `a`.
@@ -316,18 +338,12 @@ pub fn (augend Integer) + (addend Integer) Integer {
 	if augend.signum == addend.signum {
 		return augend.add(addend)
 	}
-	// Unequal signs, left is negative:
-	if augend.signum == -1 {
-		// -1 + 5 == 5 - 1
-		return addend.subtract(augend)
+	// Unequal signs
+	if augend.abs_cmp(addend) < 0 {
+		return augend.subtract(addend).neg()
+	} else {
+		return augend.subtract(addend)
 	}
-	// Unequal signs, left is positive:
-	res := augend.subtract(addend)
-	cmp := augend.abs_cmp(addend)
-	if cmp < 0 {
-		return res.neg()
-	}
-	return res
 }
 
 // - returns the difference of the integers `minuend` and `subtrahend`
@@ -476,8 +492,14 @@ pub fn (dividend Integer) / (divisor Integer) Integer {
 //
 // WARNING: this method will panic if `divisor == 0`. For a modular division method that
 // returns a Result refer to `mod_checked`.
+// Note: in V, `assert big.integer_from_i64(-10) % big.integer_from_i64(7) == big.integer_from_i64(-3)` passes.
+// In other words, the result is negative 3, and is NOT positive 4.
 @[inline]
 pub fn (dividend Integer) % (divisor Integer) Integer {
+	if dividend.signum == -1 {
+		_, r := dividend.neg().div_mod(divisor)
+		return r.neg()
+	}
 	_, r := dividend.div_mod(divisor)
 	return r
 }
@@ -743,6 +765,17 @@ pub fn (a Integer) bitwise_not() Integer {
 	}
 }
 
+// bitwise_com returns "bitwise complement" of integer `a`.
+//
+// Note: this function consider the sign of the input.
+pub fn (a Integer) bitwise_com() Integer {
+	return if a.signum == -1 {
+		a.abs() - one_int
+	} else {
+		(a + one_int).neg()
+	}
+}
+
 // bitwise_xor returns the "bitwise exclusive or" of the integers `|a|` and `|b|`.
 //
 // Note: both operands are treated as absolute values.
@@ -864,34 +897,59 @@ pub fn (integer Integer) radix_str(radix u32) string {
 			integer.hex()
 		}
 		else {
-			integer.general_radix_str(radix)
+			integer.general_radix_str(int(radix))
 		}
 	}
 }
 
-fn (integer Integer) general_radix_str(radix u32) string {
+fn (integer Integer) general_radix_str(radix int) string {
 	$if debug {
 		assert radix != 0
 	}
-	divisor := integer_from_u32(radix)
+	divisor := integer_from_int(radix).pow(u32(radix_options[radix]))
 
 	mut current := integer.abs()
 	mut new_current := zero_int
 	mut digit := zero_int
-	mut rune_array := []rune{cap: current.digits.len * 4}
+	mut sb := strings.new_builder(integer.digits.len * radix_options[radix])
+	mut st := []string{cap: integer.digits.len * radix_options[radix]}
 	for current.signum > 0 {
 		new_current, digit = current.div_mod_internal(divisor)
-		rune_array << digit_array[digit.int()]
-		unsafe { digit.free() }
-		unsafe { current.free() }
+		st << general_str(new_current, digit, radix)
 		current = new_current
 	}
 	if integer.signum == -1 {
-		rune_array << `-`
+		sb.write_string('-')
 	}
+	for st.len > 0 {
+		sb.write_string(st.pop())
+	}
+	return sb.str()
+}
 
-	rune_array.reverse_in_place()
-	return rune_array.string()
+fn general_str(quotient Integer, remainder Integer, radix int) string {
+	if quotient.signum == 0 && remainder.signum == 0 {
+		return '0'
+	}
+	divisor := integer_from_int(radix)
+
+	mut current := remainder.abs()
+	mut new_current := zero_int
+	mut digit := zero_int
+	mut sb := strings.new_builder(radix_options[radix])
+	mut st := []u8{cap: radix_options[radix]}
+	for current.signum > 0 {
+		new_current, digit = current.div_mod_internal(divisor)
+		st << digit_array[digit.int()]
+		current = new_current
+	}
+	if quotient.signum > 0 {
+		sb.write_string(strings.repeat(48, radix_options[radix] - st.len))
+	}
+	for st.len > 0 {
+		sb.write_u8(st.pop())
+	}
+	return sb.str()
 }
 
 // str returns the decimal string representation of the integer `a`.
@@ -1203,7 +1261,7 @@ pub fn (x Integer) is_odd() bool {
 // is_power_of_2 returns true when the integer `x` satisfies `2^n`, where `n >= 0`
 @[direct_array_access; inline]
 pub fn (x Integer) is_power_of_2() bool {
-	if x.signum == 0 {
+	if x.signum <= 0 {
 		return false
 	}
 
@@ -1213,7 +1271,7 @@ pub fn (x Integer) is_power_of_2() bool {
 			return false
 		}
 	}
-	n := u32(x.digits.last())
+	n := x.digits.last()
 	return n & (n - u32(1)) == 0
 }
 

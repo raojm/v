@@ -182,11 +182,10 @@ fn (mut c Checker) if_expr(mut node ast.IfExpr) ast.Type {
 								} else {
 									.skip
 								}
-							} else if comptime_field_name == c.comptime.comptime_for_method_var {
-								if left.field_name == 'return_type' {
-									skip_state = c.check_compatible_types(c.unwrap_generic(c.comptime.comptime_for_method_ret_type),
-										right as ast.TypeNode)
-								}
+							} else if comptime_field_name == c.comptime.comptime_for_method_var
+								&& left.field_name == 'return_type' {
+								skip_state = c.check_compatible_types(c.unwrap_generic(c.comptime.comptime_for_method_ret_type),
+									right as ast.TypeNode)
 							} else if comptime_field_name in [
 								c.comptime.comptime_for_variant_var,
 								c.comptime.comptime_for_enum_var,
@@ -284,6 +283,14 @@ fn (mut c Checker) if_expr(mut node ast.IfExpr) ast.Type {
 									else {
 										ComptimeBranchSkipState.skip
 									}
+								}
+							}
+						} else if comptime_field_name == c.comptime.comptime_for_method_var {
+							if left.field_name == 'return_type' {
+								skip_state = if c.unwrap_generic(c.comptime.comptime_for_method_ret_type).idx() == right.val.i64() {
+									ComptimeBranchSkipState.eval
+								} else {
+									ComptimeBranchSkipState.skip
 								}
 							}
 						} else if left.expr is ast.TypeOf {
@@ -599,6 +606,10 @@ fn (mut c Checker) smartcast_if_conds(mut node ast.Expr, mut scope ast.Scope, co
 			c.smartcast_if_conds(mut node.right, mut scope, control_expr)
 		} else if node.left in [ast.Ident, ast.SelectorExpr] && node.op == .ne
 			&& node.right is ast.None {
+			if (node.left is ast.Ident && node.left.is_mut)
+				|| (node.left is ast.SelectorExpr && node.left.is_mut) {
+				c.fail_if_immutable(mut node.left)
+			}
 			if node.left is ast.Ident && c.comptime.get_ct_type_var(node.left) == .smartcast {
 				node.left_type = c.type_resolver.get_type(node.left)
 				c.smartcast(mut node.left, node.left_type, node.left_type.clear_flag(.option), mut

@@ -32,6 +32,7 @@ pub mut:
 	map_update       bool            // {...foo}
 	interpolation    bool            // '${foo} ${bar}'
 	option_or_result bool            // has panic call
+	waiter           bool            // has thread waiter
 	print_types      map[int]bool    // print() idx types
 	used_fns         map[string]bool // filled in by markused
 	used_consts      map[string]bool // filled in by markused
@@ -966,7 +967,11 @@ pub fn (t &Table) array_name(elem_type Type) string {
 	ptr := if elem_type.is_ptr() { '&'.repeat(elem_type.nr_muls()) } else { '' }
 	opt := if elem_type.has_flag(.option) { '?' } else { '' }
 	res := if elem_type.has_flag(.result) { '!' } else { '' }
-	return '[]${opt}${res}${ptr}${elem_type_sym.name}'
+	mut name := elem_type_sym.name
+	if elem_type_sym.info is Struct && elem_type_sym.info.scoped_name != '' {
+		name = elem_type_sym.info.scoped_name
+	}
+	return '[]${opt}${res}${ptr}${name}'
 }
 
 @[inline]
@@ -2597,6 +2602,9 @@ pub fn (t &Table) dependent_names_in_expr(expr Expr) []string {
 			names << t.dependent_names_in_expr(expr.expr)
 		}
 		StructInit {
+			if expr.has_update_expr {
+				names << t.dependent_names_in_expr(expr.update_expr)
+			}
 			for field in expr.init_fields {
 				names << t.dependent_names_in_expr(field.expr)
 			}

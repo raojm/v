@@ -285,8 +285,8 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 			}
 			trace_fn_ret_type := g.styp(call_fn.return_type)
 
-			g.write('VV_LOCAL_SYMBOL ${trace_fn_ret_type} ${c_name(trace_fn)}(')
-			g.definitions.write_string('VV_LOCAL_SYMBOL ${trace_fn_ret_type} ${c_name(trace_fn)}(')
+			g.write('VV_LOC ${trace_fn_ret_type} ${c_name(trace_fn)}(')
+			g.definitions.write_string('VV_LOC ${trace_fn_ret_type} ${c_name(trace_fn)}(')
 
 			if call_fn.is_fn_var {
 				sig := g.fn_var_signature(call_fn.func.return_type, call_fn.func.params.map(it.typ),
@@ -306,21 +306,21 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 				&& call_fn.name !in ['v.debug.add_after_call', 'v.debug.add_before_call', 'v.debug.remove_after_call', 'v.debug.remove_before_call']
 			if g.pref.is_callstack {
 				if g.cur_fn.is_method || g.cur_fn.is_static_type_method {
-					g.writeln('\tarray_push((array*)&g_callstack, _MOV((v__debug__FnTrace[]){ ((v__debug__FnTrace){.name = _SLIT("${g.table.type_to_str(g.cur_fn.receiver.typ)}.${g.cur_fn.name.all_after_last('__static__')}"),.file = _SLIT("${call_fn.file}"),.line = ${call_fn.line},}) }));')
+					g.writeln('\tarray_push((array*)&g_callstack, _MOV((v__debug__FnTrace[]){ ((v__debug__FnTrace){.name = _S("${g.table.type_to_str(g.cur_fn.receiver.typ)}.${g.cur_fn.name.all_after_last('__static__')}"),.file = _S("${call_fn.file}"),.line = ${call_fn.line},}) }));')
 				} else {
-					g.writeln('\tarray_push((array*)&g_callstack, _MOV((v__debug__FnTrace[]){ ((v__debug__FnTrace){.name = _SLIT("${g.cur_fn.name}"),.file = _SLIT("${call_fn.file}"),.line = ${call_fn.line},}) }));')
+					g.writeln('\tarray_push((array*)&g_callstack, _MOV((v__debug__FnTrace[]){ ((v__debug__FnTrace){.name = _S("${g.cur_fn.name}"),.file = _S("${call_fn.file}"),.line = ${call_fn.line},}) }));')
 				}
 			}
 			if call_fn.return_type == 0 || call_fn.return_type == ast.void_type {
 				if add_trace_hook {
 					g.writeln('\tif (!g_trace.in_hook) {')
-					g.writeln('\t\tv__debug__before_call_hook(_SLIT("${call_fn.name}"));')
+					g.writeln('\t\tv__debug__before_call_hook(_S("${call_fn.name}"));')
 					g.writeln('\t}')
 				}
 				g.writeln('\t${c_name(call_fn.name)}(${orig_fn_args});')
 				if add_trace_hook {
 					g.writeln('\tif (!g_trace.in_hook) {')
-					g.writeln('\t\tv__debug__after_call_hook(_SLIT("${call_fn.name}"));')
+					g.writeln('\t\tv__debug__after_call_hook(_S("${call_fn.name}"));')
 					g.writeln('\t}')
 				}
 				if g.pref.is_callstack {
@@ -329,7 +329,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 			} else {
 				if add_trace_hook {
 					g.writeln('\tif (!g_trace.in_hook) {')
-					g.writeln('\t\tv__debug__before_call_hook(_SLIT("${call_fn.name}"));')
+					g.writeln('\t\tv__debug__before_call_hook(_S("${call_fn.name}"));')
 					g.writeln('\t}')
 				}
 				g.writeln('\t${g.styp(call_fn.return_type)} ret = ${c_name(call_fn.name)}(${orig_fn_args});')
@@ -338,7 +338,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 				}
 				if add_trace_hook {
 					g.writeln('\tif (!g_trace.in_hook) {')
-					g.writeln('\t\tv__debug__after_call_hook(_SLIT("${call_fn.name}"));')
+					g.writeln('\t\tv__debug__after_call_hook(_S("${call_fn.name}"));')
 					g.writeln('\t}')
 				}
 				g.writeln('\treturn ret;')
@@ -356,8 +356,8 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 		if is_liveshared {
 			if g.pref.os == .windows {
 				g.export_funcs << impl_fn_name
-				g.definitions.write_string('VV_EXPORTED_SYMBOL ${type_name} ${impl_fn_name}(')
-				g.write('VV_EXPORTED_SYMBOL ${type_name} ${impl_fn_name}(')
+				g.definitions.write_string('VV_EXP ${type_name} ${impl_fn_name}(')
+				g.write('VV_EXP ${type_name} ${impl_fn_name}(')
 			} else {
 				g.definitions.write_string('${type_name} ${impl_fn_name}(')
 				g.write('${type_name} ${impl_fn_name}(')
@@ -374,9 +374,9 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 				// If we are building vlib/builtin, we need all private functions like array_get
 				// to be public, so that all V programs can access them.
 				if !(node.is_anon && g.pref.parallel_cc) {
-					g.write('VV_LOCAL_SYMBOL ')
-					// g.definitions.write_string('${g.static_modifier} VV_LOCAL_SYMBOL ')
-					g.definitions.write_string('VV_LOCAL_SYMBOL ')
+					g.write('VV_LOC ')
+					// g.definitions.write_string('${g.static_modifier} VV_LOC ')
+					g.definitions.write_string('VV_LOC ')
 				}
 			}
 		}
@@ -529,7 +529,7 @@ fn (mut g Gen) gen_fn_decl(node &ast.FnDecl, skip bool) {
 			g.writeln('// export alias: ${attr.arg} -> ${name}')
 			g.export_funcs << attr.arg
 			export_alias := '${weak}${type_name} ${fn_attrs}${attr.arg}(${arg_str})'
-			g.definitions.writeln('VV_EXPORTED_SYMBOL ${export_alias}; // exported fn ${node.name}')
+			g.definitions.writeln('VV_EXP ${export_alias}; // exported fn ${node.name}')
 			g.writeln('${export_alias} {')
 			g.write2('\treturn ${name}(', fargs.join(', '))
 			g.writeln2(');', '}')
@@ -561,6 +561,7 @@ fn (mut g Gen) c_fn_name(node &ast.FnDecl) string {
 
 	if node.generic_names.len > 0 {
 		name = g.generic_fn_name(g.cur_concrete_types, name)
+		name = name.replace_each(c_fn_name_escape_seq)
 	}
 
 	if g.pref.translated || g.file.is_translated || node.is_file_translated {
@@ -753,7 +754,10 @@ fn (mut g Gen) fn_decl_params(params []ast.Param, scope &ast.Scope, is_variadic 
 			typ = g.table.sym(typ).array_info().elem_type.set_flag(.variadic)
 		}
 		param_type_sym := g.table.sym(typ)
-		mut param_type_name := g.styp(typ).replace_each(c_fn_name_escape_seq)
+		mut param_type_name := g.styp(typ)
+		if param.typ.has_flag(.generic) {
+			param_type_name = param_type_name.replace_each(c_fn_name_escape_seq)
+		}
 		if param_type_sym.kind == .function && !typ.has_flag(.option) {
 			info := param_type_sym.info as ast.FnType
 			func := info.func
@@ -1048,7 +1052,7 @@ fn (mut g Gen) call_expr(node ast.CallExpr) {
 					g.write('\n ${cur_line}')
 				}
 			} else {
-				if !g.inside_or_block && g.last_tmp_call_var.len > 0 {
+				if !g.inside_or_block && g.last_tmp_call_var.len > 0 && !cur_line.contains(' = ') {
 					g.write('\n\t*(${unwrapped_styp}*)${g.last_tmp_call_var.pop()}.data = ${cur_line}(*(${unwrapped_styp}*)${tmp_opt}.data)')
 				} else {
 					g.write('\n ${cur_line}(*(${unwrapped_styp}*)${tmp_opt}.data)')
@@ -2012,6 +2016,7 @@ fn (mut g Gen) fn_call(node ast.CallExpr) {
 					}
 				}
 				name = g.generic_fn_name(concrete_types, name)
+				name = name.replace_each(c_fn_name_escape_seq)
 			}
 		}
 	}
@@ -2626,7 +2631,11 @@ fn (mut g Gen) ref_or_deref_arg(arg ast.CallArg, expected_type ast.Type, lang as
 				if (arg.expr is ast.Ident && arg.expr.kind in [.global, .variable])
 					|| arg.expr is ast.SelectorExpr {
 					g.write('&')
-					g.expr(arg.expr)
+					if expected_type.has_flag(.option_mut_param_t) {
+						g.expr_with_opt(arg.expr, arg_typ, expected_type)
+					} else {
+						g.expr(arg.expr)
+					}
 				} else {
 					// Special case for mutable arrays. We can't `&` function
 					// results,	have to use `(array[]){ expr }[0]` hack.
@@ -2662,6 +2671,9 @@ fn (mut g Gen) ref_or_deref_arg(arg ast.CallArg, expected_type ast.Type, lang as
 				&& lang != .c {
 				if arg.expr.is_lvalue() {
 					if expected_type.has_flag(.option) {
+						if expected_type.has_flag(.option_mut_param_t) {
+							g.write('(${g.styp(expected_type)})&')
+						}
 						g.expr_with_opt(arg.expr, arg_typ, expected_type)
 						return
 					} else if arg.expr is ast.Ident && arg.expr.language == .c {
@@ -2724,6 +2736,11 @@ fn (mut g Gen) ref_or_deref_arg(arg ast.CallArg, expected_type ast.Type, lang as
 		g.write('->val')
 		return
 	} else if expected_type.has_flag(.option) {
+		if expected_type.has_flag(.option_mut_param_t)
+			&& arg_typ.nr_muls() <= expected_type.nr_muls() && !(arg.expr is ast.Ident
+			&& (arg.expr.obj is ast.Var && arg.expr.obj.is_inherited)) {
+			g.write('&')
+		}
 		if (arg_sym.info is ast.Alias || exp_sym.info is ast.Alias) && expected_type != arg_typ {
 			g.expr_opt_with_alias(arg.expr, arg_typ, expected_type)
 		} else {

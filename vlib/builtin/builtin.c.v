@@ -73,6 +73,7 @@ fn panic_debug(line_no int, file string, mod string, fn_name string, s string) {
 		eprint('   v hash: '); eprintln(vcurrent_hash())
 		eprintln('=========================================')
 		// vfmt on
+		flush_stdout()
 		$if native {
 			C.exit(1) // TODO: native backtraces
 		} $else $if exit_after_panic_message ? {
@@ -132,6 +133,7 @@ pub fn panic(s string) {
 		eprintln(s)
 		eprint('v hash: ')
 		eprintln(vcurrent_hash())
+		flush_stdout()
 		$if native {
 			C.exit(1) // TODO: native backtraces
 		} $else $if exit_after_panic_message ? {
@@ -434,13 +436,12 @@ pub fn malloc(n isize) &u8 {
 		C.fprintf(C.stderr, c'_v_malloc %6d total %10d\n', n, total_m)
 		// print_backtrace()
 	}
-	vplayground_mlimit(n)
 	if n < 0 {
 		_memory_panic(@FN, n)
 	} else if n == 0 {
-		return &u8(0)
+		return &u8(unsafe { nil })
 	}
-	mut res := &u8(0)
+	mut res := &u8(unsafe { nil })
 	$if prealloc {
 		return unsafe { prealloc_malloc(n) }
 	} $else $if gcboehm ? {
@@ -472,11 +473,10 @@ pub fn malloc_noscan(n isize) &u8 {
 		C.fprintf(C.stderr, c'malloc_noscan %6d total %10d\n', n, total_m)
 		// print_backtrace()
 	}
-	vplayground_mlimit(n)
 	if n < 0 {
 		_memory_panic(@FN, n)
 	}
-	mut res := &u8(0)
+	mut res := &u8(unsafe { nil })
 	$if prealloc {
 		return unsafe { prealloc_malloc(n) }
 	} $else $if gcboehm ? {
@@ -524,12 +524,11 @@ pub fn malloc_uncollectable(n isize) &u8 {
 		C.fprintf(C.stderr, c'malloc_uncollectable %6d total %10d\n', n, total_m)
 		// print_backtrace()
 	}
-	vplayground_mlimit(n)
 	if n < 0 {
 		_memory_panic(@FN, n)
 	}
 
-	mut res := &u8(0)
+	mut res := &u8(unsafe { nil })
 	$if prealloc {
 		return unsafe { prealloc_malloc(n) }
 	} $else $if gcboehm ? {
@@ -561,7 +560,7 @@ pub fn v_realloc(b &u8, n isize) &u8 {
 	$if trace_realloc ? {
 		C.fprintf(C.stderr, c'v_realloc %6d\n', n)
 	}
-	mut new_ptr := &u8(0)
+	mut new_ptr := &u8(unsafe { nil })
 	$if prealloc {
 		unsafe {
 			new_ptr = malloc(n)
@@ -613,7 +612,7 @@ pub fn realloc_data(old_data &u8, old_size int, new_size int) &u8 {
 			return new_ptr
 		}
 	}
-	mut nptr := &u8(0)
+	mut nptr := &u8(unsafe { nil })
 	$if gcboehm ? {
 		nptr = unsafe { C.GC_REALLOC(old_data, new_size) }
 	} $else {
@@ -636,7 +635,7 @@ pub fn vcalloc(n isize) &u8 {
 	if n < 0 {
 		_memory_panic(@FN, n)
 	} else if n == 0 {
-		return &u8(0)
+		return &u8(unsafe { nil })
 	}
 	$if prealloc {
 		return unsafe { prealloc_calloc(n) }
@@ -645,7 +644,7 @@ pub fn vcalloc(n isize) &u8 {
 	} $else {
 		return unsafe { C.calloc(1, n) }
 	}
-	return &u8(0) // not reached, TODO: remove when V's checker is improved
+	return &u8(unsafe { nil }) // not reached, TODO: remove when V's checker is improved
 }
 
 // special versions of the above that allocate memory which is not scanned
@@ -655,7 +654,6 @@ pub fn vcalloc_noscan(n isize) &u8 {
 		total_m += n
 		C.fprintf(C.stderr, c'vcalloc_noscan %6d total %10d\n', n, total_m)
 	}
-	vplayground_mlimit(n)
 	$if prealloc {
 		return unsafe { prealloc_calloc(n) }
 	} $else $if gcboehm ? {
@@ -673,7 +671,7 @@ pub fn vcalloc_noscan(n isize) &u8 {
 	} $else {
 		return unsafe { vcalloc(n) }
 	}
-	return &u8(0) // not reached, TODO: remove when V's checker is improved
+	return &u8(unsafe { nil }) // not reached, TODO: remove when V's checker is improved
 }
 
 // free allows for manually freeing memory allocated at the address `ptr`.
@@ -826,14 +824,4 @@ pub fn arguments() []string {
 		}
 	}
 	return res
-}
-
-@[if vplayground ?]
-fn vplayground_mlimit(n isize) {
-	if n > 10000 {
-		panic('allocating more than 10 KB at once is not allowed in the V playground')
-	}
-	if total_m > 50 * 1024 * 1024 {
-		panic('allocating more than 50 MB is not allowed in the V playground')
-	}
 }
