@@ -455,6 +455,9 @@ pub fn (s string) replace_each(vals []string) string {
 	// of the new string to do just one allocation.
 	mut new_len := s.len
 	mut idxs := []RepIndex{cap: 6}
+	defer {
+		unsafe { idxs.free() }
+	}
 	mut idx := 0
 	s_ := s.clone()
 	for rep_i := 0; rep_i < vals.len; rep_i += 2 {
@@ -590,11 +593,39 @@ pub fn (s string) replace_char(rep u8, with u8, repeat int) string {
 	}
 }
 
-// normalize_tabs replaces all tab characters with `tab_len` amount of spaces
+// normalize_tabs replaces all tab characters with `tab_len` amount of spaces.
 // Example: assert '\t\tpop rax\t; pop rax'.normalize_tabs(2) == '    pop rax  ; pop rax'
 @[inline]
 pub fn (s string) normalize_tabs(tab_len int) string {
 	return s.replace_char(`\t`, ` `, tab_len)
+}
+
+// expand_tabs replaces tab characters (\t) in the input string with spaces to achieve proper column alignment .
+// Example: assert 'AB\tHello!'.expand_tabs(4) == 'AB  Hello!'
+pub fn (s string) expand_tabs(tab_len int) string {
+	if tab_len <= 0 {
+		return s.clone() // Handle invalid tab length
+	}
+	mut output := strings.new_builder(s.len)
+	mut column := 0
+	for r in s.runes_iterator() {
+		match r {
+			`\t` {
+				spaces := tab_len - (column % tab_len)
+				output.write_string(' '.repeat(spaces))
+				column += spaces
+			}
+			`\n`, `\r` {
+				output.write_rune(r)
+				column = 0 // Reset on any line break
+			}
+			else {
+				output.write_rune(r)
+				column++ // Valid for most chars; consider Unicode wide chars
+			}
+		}
+	}
+	return output.str()
 }
 
 // bool returns `true` if the string equals the word "true" it will return `false` otherwise.
@@ -845,6 +876,8 @@ fn (s string) plus_two(a string, b string) string {
 @[direct_array_access]
 pub fn (s string) split_any(delim string) []string {
 	mut res := []string{}
+	unsafe { res.flags.set(.noslices) }
+	defer { unsafe { res.flags.clear(.noslices) } }
 	mut i := 0
 	// check empty source string
 	if s.len > 0 {
@@ -874,6 +907,8 @@ pub fn (s string) split_any(delim string) []string {
 @[direct_array_access]
 pub fn (s string) rsplit_any(delim string) []string {
 	mut res := []string{}
+	unsafe { res.flags.set(.noslices) }
+	defer { unsafe { res.flags.clear(.noslices) } }
 	mut i := s.len - 1
 	if s.len > 0 {
 		if delim.len <= 0 {
@@ -964,6 +999,8 @@ pub fn (s string) split_n(delim string, n int) []string {
 @[direct_array_access]
 pub fn (s string) split_nth(delim string, nth int) []string {
 	mut res := []string{}
+	unsafe { res.flags.set(.noslices) } // allow freeing of old data during <<
+	defer { unsafe { res.flags.clear(.noslices) } }
 
 	match delim.len {
 		0 {
@@ -1023,6 +1060,8 @@ pub fn (s string) split_nth(delim string, nth int) []string {
 @[direct_array_access]
 pub fn (s string) rsplit_nth(delim string, nth int) []string {
 	mut res := []string{}
+	unsafe { res.flags.set(.noslices) } // allow freeing of old data during <<
+	defer { unsafe { res.flags.clear(.noslices) } }
 
 	match delim.len {
 		0 {
@@ -1082,6 +1121,8 @@ pub fn (s string) split_into_lines() []string {
 	if s.len == 0 {
 		return res
 	}
+	unsafe { res.flags.set(.noslices) } // allow freeing of old data during <<
+	defer { unsafe { res.flags.clear(.noslices) } }
 	cr := `\r`
 	lf := `\n`
 	mut line_start := 0
@@ -1110,6 +1151,8 @@ pub fn (s string) split_into_lines() []string {
 // Repeated, trailing or leading whitespaces will be omitted.
 pub fn (s string) split_by_space() []string {
 	mut res := []string{}
+	unsafe { res.flags.set(.noslices) }
+	defer { unsafe { res.flags.clear(.noslices) } }
 	for word in s.split_any(' \n\t\v\f\r') {
 		if word != '' {
 			res << word
@@ -1862,14 +1905,13 @@ fn (s string) trim_chars(cutset string, mode TrimMode) string {
 @[direct_array_access]
 fn (s string) trim_runes(cutset string, mode TrimMode) string {
 	s_runes := s.runes()
-	c_runes := cutset.runes()
 	mut pos_left := 0
 	mut pos_right := s_runes.len - 1
 	mut cs_match := true
 	for pos_left <= s_runes.len && pos_right >= -1 && cs_match {
 		cs_match = false
 		if mode in [.trim_left, .trim_both] {
-			for cs in c_runes {
+			for cs in cutset.runes_iterator() {
 				if s_runes[pos_left] == cs {
 					pos_left++
 					cs_match = true
@@ -1878,7 +1920,7 @@ fn (s string) trim_runes(cutset string, mode TrimMode) string {
 			}
 		}
 		if mode in [.trim_right, .trim_both] {
-			for cs in c_runes {
+			for cs in cutset.runes_iterator() {
 				if s_runes[pos_right] == cs {
 					pos_right--
 					cs_match = true
@@ -2124,10 +2166,13 @@ pub fn (str string) is_hex() bool {
 	}
 
 	for i < str.len {
-		if (str[i] < `0` || str[i] > `9`) && ((str[i] < `a` || str[i] > `f`)
-			&& (str[i] < `A` || str[i] > `F`)) {
+		// TODO: remove this workaround for v2's parser
+		// vfmt off
+		if (str[i] < `0` || str[i] > `9`) && 
+		    ((str[i] < `a` || str[i] > `f`) && (str[i] < `A` || str[i] > `F`)) {
 			return false
 		}
+		// vfmt on
 		i++
 	}
 
@@ -2461,11 +2506,13 @@ pub fn (s string) repeat(count int) string {
 	return unsafe { ret.vstring_with_len(new_len) }
 }
 
-// fields returns a string array of the string split by `\t` and ` `
+// fields returns a string array of the string split by `\t` and ` ` .
 // Example: assert '\t\tv = v'.fields() == ['v', '=', 'v']
 // Example: assert '  sss   ssss'.fields() == ['sss', 'ssss']
 pub fn (s string) fields() []string {
 	mut res := []string{}
+	unsafe { res.flags.set(.noslices) }
+	defer { unsafe { res.flags.clear(.noslices) } }
 	mut word_start := 0
 	mut word_len := 0
 	mut is_in_word := false
@@ -2841,8 +2888,11 @@ pub fn (s string) camel_to_snake() string {
 		c := s[i]
 		c_is_upper := c.is_capital()
 		// Cases: `aBcd == a_bcd` || `ABcd == ab_cd`
-		if ((c_is_upper && !prev_is_upper)
-			|| (!c_is_upper && prev_is_upper && s[i - 2].is_capital())) && c != `_` {
+		// TODO: remove this workaround for v2's parser
+		// vfmt off
+		if ((c_is_upper && !prev_is_upper) ||
+			(!c_is_upper && prev_is_upper && s[i - 2].is_capital())) && 
+			c != `_` {
 			unsafe {
 				if b[pos - 1] != `_` {
 					b[pos] = `_`
@@ -2850,6 +2900,7 @@ pub fn (s string) camel_to_snake() string {
 				}
 			}
 		}
+		// vfmt on
 		lower_c := if c_is_upper { c + 32 } else { c }
 		unsafe {
 			b[pos] = lower_c
@@ -2910,7 +2961,7 @@ pub:
 	end   string = '\n'
 }
 
-// wrap wraps the string `s` when each line exceeds the width specified in `width`
+// wrap wraps the string `s` when each line exceeds the width specified in `width` .
 // (default value is 80), and will use `end` (default value is '\n') as a line break.
 // Example: `assert 'Hello, my name is Carl and I am a delivery'.wrap(width: 20) == 'Hello, my name is\nCarl and I am a\ndelivery'`
 pub fn (s string) wrap(config WrapConfig) string {
@@ -2939,7 +2990,7 @@ pub fn (s string) wrap(config WrapConfig) string {
 	return sb.str()
 }
 
-// hex returns a string with the hexadecimal representation of the bytes of the string `s`
+// hex returns a string with the hexadecimal representation of the bytes of the string `s` .
 pub fn (s string) hex() string {
 	if s == '' {
 		return ''
@@ -2961,4 +3012,41 @@ fn data_to_hex_string(data &u8, len int) string {
 	}
 	hex[dst] = 0
 	return tos(hex, dst)
+}
+
+pub struct RunesIterator {
+mut:
+	s string
+	i int
+}
+
+// runes_iterator creates an iterator over all the runes in the given string `s`.
+// It can be used in `for r in s.runes_iterator() {`, as a direct substitute to
+// calling .runes(): `for r in s.runes() {`, which needs an intermediate allocation
+// of an array.
+pub fn (s string) runes_iterator() RunesIterator {
+	return RunesIterator{
+		s: s
+		i: 0
+	}
+}
+
+// next is the method that will be called for each iteration in `for r in s.runes_iterator() {` .
+pub fn (mut ri RunesIterator) next() ?rune {
+	for ri.i >= ri.s.len {
+		return none
+	}
+	char_len := utf8_char_len(unsafe { ri.s.str[ri.i] })
+	if char_len == 1 {
+		res := unsafe { ri.s.str[ri.i] }
+		ri.i++
+		return res
+	}
+	start := &u8(unsafe { &ri.s.str[ri.i] })
+	len := if ri.s.len - 1 >= ri.i + char_len { char_len } else { ri.s.len - ri.i }
+	ri.i += char_len
+	if char_len > 4 {
+		return 0
+	}
+	return rune(impl_utf8_to_utf32(start, len))
 }

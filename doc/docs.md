@@ -120,6 +120,7 @@ by using any of the following commands in a terminal:
     * [Mutable arguments](#mutable-arguments)
     * [Variable number of arguments](#variable-number-of-arguments)
     * [Anonymous & higher-order functions](#anonymous--higher-order-functions)
+    * [Lambda expressions](#lambda-expressions)
     * [Closures](#closures)
     * [Parameter evaluation order](#parameter-evaluation-order)
 * [References](#references)
@@ -3019,6 +3020,28 @@ fn main() {
 	}
 	println(fns_map['cube'](2)) // "8"
 }
+```
+
+### Lambda expressions
+
+Lambda expressions in V are small anonymous functions, defined using
+the `|variables| expression` syntax. Note: this syntax is valid only inside calls to higher
+order functions.
+
+Here are some examples:
+```v
+mut a := [1, 2, 3]
+a.sort(|x, y| x > y) // sorts the array, defining the comparator with a lambda expression
+println(a.map(|x| x * 10)) // prints [30, 20, 10]
+```
+
+```v
+// Lambda function can be used as callback
+fn f(cb fn (a int) int) int {
+	return cb(10)
+}
+
+println(f(|x| x + 4)) // prints 14
 ```
 
 ### Closures
@@ -6052,6 +6075,7 @@ that are substituted at compile time:
 - `@MOD` => replaced with the name of the current V module.
 - `@STRUCT` => replaced with the name of the current V struct.
 - `@FILE` => replaced with the absolute path of the V source file.
+- `@DIR` => replaced with the absolute path of the *folder*, where the V source file is.
 - `@LINE` => replaced with the V line number where it appears (as a string).
 - `@FILE_LINE` => like `@FILE:@LINE`, but the file part is a relative path.
 - `@LOCATION` => file, line and name of the current type + method; suitable for logging.

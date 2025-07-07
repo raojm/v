@@ -248,6 +248,20 @@ struct DivModTest {
 
 // vfmt off
 const div_mod_test_data = [
+	DivModTest{0, 7, 0, 0},
+	DivModTest{0, -7, 0, 0},
+	DivModTest{3, 7, 0, 3},
+	DivModTest{-3, -7, 0, -3},
+	DivModTest{-3, 7, 0, -3},
+	DivModTest{3, -7, 0, 3},
+	DivModTest{7, 3, 2, 1},
+	DivModTest{-7, -3, 2, -1},
+	DivModTest{-7, 3, -2, -1},
+	DivModTest{7, -3, -2, 1},
+	DivModTest{8, 2, 4, 0},
+	DivModTest{-8, -2, 4, 0},
+	DivModTest{-8, 2, -4, 0},
+	DivModTest{8, -2, -4, 0},
 	DivModTest{13, 10, 1, 3},
 	DivModTest{13, 9, 1, 4},
 	DivModTest{7, 5, 1, 2},
@@ -283,6 +297,21 @@ const div_test_data = [
 	DivTest{-1234, 10, -123},
 	DivTest{1234, -10, -123},
 	DivTest{-1234, -10, 123},
+]
+// vfmt on
+
+struct ModEuclidTest {
+	dividend TestInteger
+	divisor  TestInteger
+	modulus  TestInteger
+}
+
+// vfmt off
+const mod_euclid_test_data = [
+	ModEuclidTest{-7, 3, 2},
+	ModEuclidTest{7, 3, 1},
+	ModEuclidTest{7, -3, 1},
+	ModEuclidTest{-7, -3, 2},
 ]
 // vfmt on
 
@@ -499,6 +528,8 @@ const left_shift_test_data = [
 ]
 
 const right_shift_test_data = [
+	ShiftTest{ -8, 4, 0 },
+	ShiftTest{ -8, 40, 0 },
 	ShiftTest{ 45, 3, 5 },
 	ShiftTest{ 0x13374956, 16, 0x1337 },
 	ShiftTest{ [u8(1), 1, 1, 0, 0, 0, 0, 0, 0, 0], 56, [u8(1), 1, 1] },
@@ -638,6 +669,12 @@ fn test_div() {
 fn test_mod() {
 	for t in div_mod_test_data {
 		assert t.dividend.parse() % t.divisor.parse() == t.remainder.parse()
+	}
+}
+
+fn test_mod_euclid() {
+	for t in mod_euclid_test_data {
+		assert t.dividend.parse().mod_euclid(t.divisor.parse()) == t.modulus.parse()
 	}
 }
 

@@ -40,6 +40,7 @@ pub mut:
 	used_veb_types   []Type          // veb context types, filled in by checker
 	used_maps        int             // how many times maps were used, filled in by markused
 	used_arrays      int             // how many times arrays were used, filled in by markused
+	used_none        int             // how many times `none` was used, filled in by markused
 	external_types   bool            // true, when external type is used
 	// json             bool            // json is imported
 	debugger       bool            // debugger is used
@@ -2555,6 +2556,9 @@ pub fn (t &Table) dependent_names_in_expr(expr Expr) []string {
 			if expr.kind in [.global, .constant] {
 				names << util.no_dots(expr.name)
 			}
+		}
+		IndexExpr {
+			names << t.dependent_names_in_expr(expr.left)
 		}
 		IfExpr {
 			for branch in expr.branches {

@@ -680,6 +680,9 @@ pub fn free(ptr voidptr) {
 	$if trace_free ? {
 		C.fprintf(C.stderr, c'free ptr: %p\n', ptr)
 	}
+	$if builtin_free_nop ? {
+		return
+	}
 	if ptr == unsafe { 0 } {
 		$if trace_free_nulls ? {
 			C.fprintf(C.stderr, c'free null ptr\n', ptr)
@@ -754,6 +757,7 @@ pub fn memdup_uncollectable(src voidptr, sz isize) voidptr {
 	}
 }
 
+// GCHeapUsage contains stats about the current heap usage of your program.
 pub struct GCHeapUsage {
 pub:
 	heap_size      usize
@@ -763,7 +767,7 @@ pub:
 	bytes_since_gc usize
 }
 
-// gc_heap_usage returns the info about heap usage
+// gc_heap_usage returns the info about heap usage.
 pub fn gc_heap_usage() GCHeapUsage {
 	$if gcboehm ? {
 		mut res := GCHeapUsage{}
@@ -775,7 +779,7 @@ pub fn gc_heap_usage() GCHeapUsage {
 	}
 }
 
-// gc_memory_use returns the total memory use in bytes by all allocated blocks
+// gc_memory_use returns the total memory use in bytes by all allocated blocks.
 pub fn gc_memory_use() usize {
 	$if gcboehm ? {
 		return C.GC_get_memory_use()

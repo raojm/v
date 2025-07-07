@@ -45,12 +45,14 @@ on:
       - '.github/workflows/native_backend_ci.yml'
 
 concurrency:
-  group: native_backend-${{ github.workflow }}-${{ github.ref}}
+  group: native_backend-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   native-backend-ubuntu:
     runs-on: ubuntu-24.04
+    env:
+      VJOBS: 1
     steps:
       - uses: actions/checkout@v4
       - name: Build V
@@ -60,12 +62,12 @@ jobs:
       - name: Rebuild V with -g, for better stacktraces on compiler panics
         run: v -g self
       - name: Run the native backend tests serially with more details
-        run: |
-          v vlib/v/gen/native/macho_test.v
-          v vlib/v/gen/native/tests/native_test.v
+        run: v test vlib/v/gen/native/
 
   native-backend-windows:
-    runs-on: windows-2019
+    runs-on: windows-2022
+    env:
+      VJOBS: 1
     steps:
       - uses: actions/checkout@v4
       - name: Build V (Windows)
@@ -73,6 +75,4 @@ jobs:
       - name: Rebuild V with -g, for better stacktraces on compiler panics
         run: v -g self
       - name: Run the native backend tests serially with more details
-        run: |
-          v vlib/v/gen/native/macho_test.v
-          v vlib/v/gen/native/tests/native_test.v
+        run: v test vlib/v/gen/native/

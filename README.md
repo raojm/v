@@ -168,6 +168,18 @@ cd v
 make
 ```
 
+### OpenBSD
+
+On OpenBSD (release 7.7), V needs `boehm-gc` and `openssl-3.4.1p0v0` packages preinstalled. After
+installing them, use GNU `make` (installed with `gmake` package), to build V.
+
+```bash
+pkg_add boehm-gc openssl-3.4.1p0v0 gmake
+git clone --depth=1 https://github.com/vlang/v
+cd v
+gmake
+```
+
 ### Termux/Android
 
 On Termux, V needs some packages preinstalled - a working C compiler, also `libexecinfo`,
@@ -221,7 +233,7 @@ type:
 v symlink
 ```
 
-(or `./v symlink` in PowerShell)
+(or `.\v symlink` in PowerShell)
 
 That will make V available everywhere, by adding it to your PATH. Please restart your
 shell/editor after that, so that it can pick up the new PATH variable.

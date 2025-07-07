@@ -339,6 +339,7 @@ fn gg_frame_fn(mut ctx Context) {
 	}
 
 	ctx.record_frame()
+	ctx.memory_trace_frame()
 
 	if ctx.ui_mode && !ctx.needs_refresh {
 		// println('ui mode, exiting')
@@ -466,6 +467,28 @@ fn gg_event_fn(ce voidptr, user_data voidptr) {
 		}
 		else {
 			// dump(e)
+		}
+	}
+	$if linux {
+		if e.typ == .key_down && e.key_code in [.backspace, .delete, .enter, .tab] {
+			// with X11, sokol does not send .char events for some keys; we will emulate them for consistency here:
+			e.char_code = match e.key_code {
+				.backspace { u32(8) }
+				.tab { 9 }
+				.enter { 13 }
+				.delete { 127 }
+				else { u32(e.key_code) }
+			}
+			e.key_code = .invalid
+			e.typ = .char
+			if ctx.config.event_fn != unsafe { nil } {
+				ctx.config.event_fn(e, ctx.config.user_data)
+			} else if ctx.config.on_event != unsafe { nil } {
+				ctx.config.on_event(ctx.config.user_data, e)
+			}
+			if ctx.config.char_fn != unsafe { nil } {
+				ctx.config.char_fn(e.char_code, ctx.config.user_data)
+			}
 		}
 	}
 }
@@ -862,3 +885,18 @@ pub fn wait_events() {
 	}
 }
 */
+
+// memory_trace_frame creates a small allocation at the start of each frame,
+// that is easy to search for in memdump.bin files, created with:
+// -prealloc -d prealloc_memset -d prealloc_memset_value=65 -d prealloc_dump -d gg_memory_trace_frame
+@[if gg_memory_trace_frame ?; manualfree]
+fn (mut ctx Context) memory_trace_frame() {
+	frame_tag_size := 61 // uneven, and easy to spot in heaptrack histograms as well
+	unsafe {
+		frame_tag := &u8(vcalloc(frame_tag_size))
+		C.snprintf(frame_tag, frame_tag_size, c'@@ gg_memory_trace_frame: %06d ', ctx.frame)
+		frame_tag[frame_tag_size - 2] = `@`
+		frame_tag[frame_tag_size - 1] = `@`
+		free(frame_tag)
+	}
+}

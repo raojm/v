@@ -415,38 +415,31 @@ pub fn (multiplicand Integer) * (multiplier Integer) Integer {
 //
 // DO NOT use this method if the divisor has any chance of being 0.
 fn (dividend Integer) div_mod_internal(divisor Integer) (Integer, Integer) {
-	$if debug {
-		assert divisor.signum != 0
-	}
-
-	if dividend.signum == 0 {
-		return zero_int, zero_int
-	}
-	if divisor == one_int {
-		return dividend.clone(), zero_int
-	}
-	if divisor.signum == -1 {
-		q, r := dividend.div_mod_internal(divisor.neg())
-		return q.neg(), r
-	}
-	if dividend.signum == -1 {
-		q, r := dividend.neg().div_mod_internal(divisor)
-		if r.signum == 0 {
-			return q.neg(), zero_int
-		} else {
-			return q.neg() - one_int, divisor - r
-		}
-	}
-	// Division for positive integers
 	mut q := []u32{cap: int_max(1, dividend.digits.len - divisor.digits.len + 1)}
 	mut r := []u32{cap: dividend.digits.len}
+	mut q_signum := 0
+	mut r_signum := 0
+
 	divide_digit_array(dividend.digits, divisor.digits, mut q, mut r)
+	if dividend.signum > 0 && divisor.signum > 0 {
+		q_signum = 1
+		r_signum = 1
+	} else if dividend.signum > 0 && divisor.signum < 0 {
+		q_signum = -1
+		r_signum = 1
+	} else if dividend.signum < 0 && divisor.signum > 0 {
+		q_signum = -1
+		r_signum = -1
+	} else {
+		q_signum = 1
+		r_signum = -1
+	}
 	quotient := Integer{
-		signum: if q.len == 0 { 0 } else { 1 }
+		signum: if q.len == 0 { 0 } else { q_signum }
 		digits: q
 	}
 	remainder := Integer{
-		signum: if r.len == 0 { 0 } else { 1 }
+		signum: if r.len == 0 { 0 } else { r_signum }
 		digits: r
 	}
 	return quotient, remainder
@@ -480,10 +473,6 @@ pub fn (dividend Integer) div_mod_checked(divisor Integer) !(Integer, Integer) {
 // refer to `div_checked`.
 @[inline]
 pub fn (dividend Integer) / (divisor Integer) Integer {
-	if dividend.signum == -1 {
-		q, _ := dividend.neg().div_mod(divisor)
-		return q.neg()
-	}
 	q, _ := dividend.div_mod(divisor)
 	return q
 }
@@ -496,10 +485,6 @@ pub fn (dividend Integer) / (divisor Integer) Integer {
 // In other words, the result is negative 3, and is NOT positive 4.
 @[inline]
 pub fn (dividend Integer) % (divisor Integer) Integer {
-	if dividend.signum == -1 {
-		_, r := dividend.neg().div_mod(divisor)
-		return r.neg()
-	}
 	_, r := dividend.div_mod(divisor)
 	return r
 }
@@ -518,6 +503,33 @@ pub fn (dividend Integer) div_checked(divisor Integer) !Integer {
 pub fn (dividend Integer) mod_checked(divisor Integer) !Integer {
 	_, r := dividend.div_mod_checked(divisor)!
 	return r
+}
+
+// modulo_euclid returns the result of mathematical modulus.
+// The result is always non-negative for positive `divisor`.
+//
+// WARNING: this method will panic if `divisor == 0`.
+@[inline]
+pub fn (dividend Integer) mod_euclid(divisor Integer) Integer {
+	r := dividend % divisor
+	if r < zero_int {
+		return r + divisor.abs()
+	} else {
+		return r
+	}
+}
+
+// mod_euclid_checked returns the result of mathematical modulus.
+// The result is always non-negative for positive `divisor`
+// or an error if `divisor == 0`.
+@[inline]
+pub fn (dividend Integer) mod_euclid_checked(divisor Integer) !Integer {
+	r := dividend.mod_checked(divisor)!
+	if r < zero_int {
+		return r + divisor.abs()
+	} else {
+		return r
+	}
 }
 
 // mask_bits is the equivalent of `a % 2^n` (only when `a >= 0`), however doing a full division
@@ -835,7 +847,7 @@ pub fn (a Integer) right_shift(amount u32) Integer {
 	}
 	return Integer{
 		digits: new_array
-		signum: a.signum
+		signum: if new_array.len > 0 { a.signum } else { 0 }
 	}
 }
 
