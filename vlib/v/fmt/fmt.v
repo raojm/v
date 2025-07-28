@@ -968,9 +968,17 @@ pub fn (mut f Fmt) const_decl(node ast.ConstDecl) {
 			}
 			f.write('const ')
 		}
+		if field.is_virtual_c {
+			f.write('C.')
+		}
 		f.write('${name} ')
-		f.write('= ')
-		f.expr(field.expr)
+		if field.is_virtual_c {
+			// f.typ(field.typ)
+			f.write(f.table.type_to_str(field.typ))
+		} else {
+			f.write('= ')
+			f.expr(field.expr)
+		}
 		f.comments(field.end_comments, same_line: true)
 		if node.is_block && fidx < node.fields.len - 1 && node.fields.len > 1 {
 			// old style grouped consts, converted to the new style ungrouped const
@@ -1605,7 +1613,9 @@ pub fn (mut f Fmt) return_stmt(node ast.Return) {
 			}
 		}
 	}
-	f.writeln('')
+	if !f.single_line_if {
+		f.writeln('')
+	}
 }
 
 pub fn (mut f Fmt) sql_stmt(node ast.SqlStmt) {
@@ -1676,6 +1686,7 @@ pub fn (mut f Fmt) type_decl(node ast.TypeDecl) {
 }
 
 pub fn (mut f Fmt) alias_type_decl(node ast.AliasTypeDecl) {
+	f.attrs(node.attrs)
 	if node.is_pub {
 		f.write('pub ')
 	}

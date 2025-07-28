@@ -339,6 +339,14 @@ fn (mut c Checker) fn_decl(mut node ast.FnDecl) {
 					}
 				}
 			}
+			if c.pref.skip_unused {
+				if param.typ.has_flag(.generic) {
+					c.table.used_features.comptime_syms[c.unwrap_generic(param.typ)] = true
+				}
+				if node.return_type.has_flag(.generic) {
+					c.table.used_features.comptime_syms[c.unwrap_generic(node.return_type)] = true
+				}
+			}
 			if param.name == node.mod && param.name != 'main' {
 				c.error('duplicate of a module name `${param.name}`', param.pos)
 			}
@@ -771,8 +779,6 @@ fn (mut c Checker) call_expr(mut node ast.CallExpr) ast.Type {
 		c.inside_or_block_value = true
 		c.check_or_expr(node.or_block, typ, c.expected_or_type, node)
 		c.inside_or_block_value = old_inside_or_block_value
-	} else if node.or_block.kind == .propagate_option || node.or_block.kind == .propagate_result {
-		c.markused_option_or_result(!c.is_builtin_mod && c.mod != 'strings')
 	}
 	c.expected_or_type = old_expected_or_type
 	c.markused_call_expr(left_type, mut node)
@@ -994,6 +1000,9 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 		}
 		typ := expr as ast.TypeNode
 		node.return_type = if is_json_decode { typ.typ.set_flag(.result) } else { typ.typ }
+		if typ.typ.has_flag(.generic) {
+			c.table.used_features.comptime_syms[c.unwrap_generic(typ.typ)] = true
+		}
 		return node.return_type
 	} else if fn_name == '__addr' {
 		if !c.inside_unsafe {
@@ -1861,6 +1870,11 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 				}
 			}
 		}
+		if c.pref.skip_unused && node.concrete_types.len > 0 {
+			for concrete_type in node.concrete_types {
+				c.table.used_features.comptime_syms[c.unwrap_generic(concrete_type)] = true
+			}
+		}
 	}
 
 	// resolve return generics struct to concrete type
@@ -1879,6 +1893,9 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 		if typ := c.table.convert_generic_type(func.return_type, func.generic_names, concrete_types) {
 			node.return_type = typ
 			c.register_trace_call(node, func)
+			if func.return_type.has_flag(.generic) {
+				c.table.used_features.comptime_syms[typ.clear_option_and_result()] = true
+			}
 			return typ
 		}
 	}
@@ -1891,6 +1908,12 @@ fn (mut c Checker) fn_call(mut node ast.CallExpr, mut continue_check &bool) ast.
 		ret_type := c.resolve_fn_return_type(func, node, concrete_types)
 		c.register_trace_call(node, func)
 		node.return_type = ret_type
+		if ret_type.has_flag(.generic) {
+			unwrapped_ret := c.unwrap_generic(ret_type)
+			if c.table.sym(unwrapped_ret).kind == .multi_return {
+				c.table.used_features.comptime_syms[unwrapped_ret] = true
+			}
+		}
 		return ret_type
 	}
 	c.register_trace_call(node, func)
@@ -2722,9 +2745,6 @@ fn (mut c Checker) spawn_expr(mut node ast.SpawnExpr) ast.Type {
 		c.error('option handling cannot be done in `spawn` call. Do it when calling `.wait()`',
 			node.call_expr.or_block.pos)
 	}
-	if node.is_expr {
-		c.table.used_features.waiter = true
-	}
 	// Make sure there are no mutable arguments
 	for arg in node.call_expr.args {
 		if arg.is_mut && !arg.typ.is_ptr() {
@@ -2759,9 +2779,6 @@ fn (mut c Checker) go_expr(mut node ast.GoExpr) ast.Type {
 	if node.call_expr.or_block.kind != .absent {
 		c.error('option handling cannot be done in `go` call. Do it when calling `.wait()`',
 			node.call_expr.or_block.pos)
-	}
-	if node.is_expr {
-		c.table.used_features.waiter = true
 	}
 	// Make sure there are no mutable arguments
 	for arg in node.call_expr.args {

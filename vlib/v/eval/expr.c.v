@@ -1,6 +1,5 @@
 module eval
 
-import v.pref
 import v.ast
 import v.util
 import math
@@ -55,12 +54,12 @@ pub fn (mut e Eval) expr(expr ast.Expr, expecting ast.Type) Object {
 						}
 						'malloc' {
 							return Ptr{
-								val: unsafe { C.malloc(args[0].int_val()) }
+								val: unsafe { malloc(isize(args[0].int_val())) }
 							}
 						}
 						'calloc' {
 							return Ptr{
-								val: unsafe { C.calloc(args[0].int_val(), args[1].int_val()) }
+								val: unsafe { vcalloc(isize(args[0].int_val() * args[1].int_val())) }
 							}
 						}
 						'getcwd' {
@@ -112,10 +111,10 @@ pub fn (mut e Eval) expr(expr ast.Expr, expecting ast.Type) Object {
 
 					if func is ast.FnDecl {
 						e.run_func(func as ast.FnDecl, ...args)
-						if e.return_values.len == 1 {
-							return e.return_values[0]
+						return if e.return_values.len == 1 {
+							e.return_values[0]
 						} else {
-							return e.return_values
+							e.return_values
 						}
 					}
 					e.error('unknown function: ${mod}.${name} at line ${expr.pos.line_nr}')
@@ -145,58 +144,37 @@ pub fn (mut e Eval) expr(expr ast.Expr, expecting ast.Type) Object {
 			return Object(res)
 		}
 		ast.IfExpr {
-			if expr.is_expr {
-				e.error('`if` expressions not supported')
-			}
-
-			if expr.is_comptime {
-				for i, branch in expr.branches {
-					mut do_if := false
-					if expr.has_else && i + 1 == expr.branches.len { // else branch
-						do_if = true
-					} else {
-						if branch.cond is ast.Ident {
-							if known_os := pref.os_from_string(branch.cond.name) {
-								do_if = e.pref.os == known_os
-							} else {
-								match branch.cond.name {
-									'prealloc' {
-										do_if = e.pref.prealloc
-									}
-									else {
-										e.error('unknown compile time if: ${branch.cond.name}')
-									}
-								}
-							}
-						} else if branch.cond is ast.PostfixExpr {
-							do_if = (branch.cond.expr as ast.Ident).name in e.pref.compile_defines
-						}
-					}
-					if do_if {
-						e.stmts(branch.stmts)
-						break
-					}
+			for i, branch in expr.branches {
+				is_else_branch := expr.has_else && expr.branches.len == i + 1
+				result := if expr.is_comptime {
+					e.comptime_cond(branch.cond)
+				} else if !is_else_branch {
+					e.expr(branch.cond, ast.bool_type_idx) as bool
+				} else {
+					false
 				}
-				return empty
-			} else {
-				for i, b in expr.branches {
-					mut result := e.expr(b.cond, ast.bool_type_idx)
 
-					if expr.has_else && i + 1 == expr.branches.len { // else block
-						e.stmts(b.stmts)
-						break
+				if result || is_else_branch {
+					stmts := branch.stmts.filter(it is ast.ExprStmt)
+					if stmts.len > 0 {
+						// a := if x == 1 { 100 } else { 200 }, we need to get expr result
+						e.returning = true
+						e.return_values = []
 					}
-					if result is bool {
-						if result as bool {
-							e.stmts(b.stmts)
-							break
+					e.stmts(branch.stmts)
+					if stmts.len > 0 {
+						// a := if x == 1 { 100 } else { 200 }, we need to get expr result
+						return if e.return_values.len > 0 {
+							e.return_values[e.return_values.len - 1]
+						} else {
+							empty
 						}
 					} else {
-						e.error('non-bool expression: ${b.cond}')
+						return empty
 					}
 				}
-				return empty
 			}
+			return empty
 		}
 		ast.InfixExpr {
 			left := e.expr(expr.left, expr.left_type)
@@ -521,6 +499,41 @@ pub fn (mut e Eval) expr(expr ast.Expr, expecting ast.Type) Object {
 		}
 		ast.PrefixExpr {
 			match expr.op {
+				.not {
+					return !(e.expr(expr.right, ast.bool_type) as bool)
+				}
+				.bit_not {
+					x := e.expr(expr.right, expr.right_type)
+					match x {
+						Uint {
+							return Uint{
+								val:  ~x.val
+								size: x.size
+							}
+						}
+						Int {
+							return Int{
+								val:  ~x.val
+								size: x.size
+							}
+						}
+						bool {
+							return !(x as bool)
+						}
+						i64 {
+							return ~(x as i64)
+						}
+						rune {
+							return ~(x as rune)
+						}
+						u8 {
+							return ~(x as u8)
+						}
+						else {
+							e.error('operator `~` can only be used with integer types: ${e.table.sym(expr.right_type).str()}')
+						}
+					}
+				}
 				.amp {
 					x := e.expr(expr.right, expr.right_type)
 					return Ptr{

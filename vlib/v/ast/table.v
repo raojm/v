@@ -10,42 +10,40 @@ import v.util
 @[heap; minify]
 pub struct UsedFeatures {
 pub mut:
-	dump             bool            // dump()
-	index            bool            // string[0]
-	range_index      bool            // string[0..1]
-	cast_ptr         bool            // &u8(...)
-	asserts          bool            // assert expr
-	as_cast          bool            // expr as Type
-	anon_fn          bool            // fn () { }
-	auto_str         bool            // auto str fns
-	auto_str_ptr     bool            // auto str fns for ptr type
-	arr_prepend      bool            // arr.prepend()
-	arr_insert       bool            // arr.insert()
-	arr_first        bool            // arr.first()
-	arr_last         bool            // arr.last()
-	arr_pop          bool            // arr.pop()
-	arr_delete       bool            // arr.delete()
-	arr_reverse      bool            // arr.reverse()
-	arr_init         bool            // [1, 2, 3]
-	arr_map          bool            // []map[key]value
-	type_name        bool            // var.type_name()
-	map_update       bool            // {...foo}
-	interpolation    bool            // '${foo} ${bar}'
-	option_or_result bool            // has panic call
-	waiter           bool            // has thread waiter
-	print_types      map[int]bool    // print() idx types
-	used_fns         map[string]bool // filled in by markused
-	used_consts      map[string]bool // filled in by markused
-	used_globals     map[string]bool // filled in by markused
-	used_veb_types   []Type          // veb context types, filled in by checker
-	used_maps        int             // how many times maps were used, filled in by markused
-	used_arrays      int             // how many times arrays were used, filled in by markused
-	used_none        int             // how many times `none` was used, filled in by markused
-	external_types   bool            // true, when external type is used
+	dump           bool            // dump()
+	index          bool            // string[0]
+	range_index    bool            // string[0..1]
+	cast_ptr       bool            // &u8(...)
+	asserts        bool            // assert expr
+	anon_fn        bool            // fn () { }
+	auto_str       bool            // auto str fns
+	auto_str_ptr   bool            // auto str fns for ptr type
+	arr_prepend    bool            // arr.prepend()
+	arr_insert     bool            // arr.insert()
+	arr_first      bool            // arr.first()
+	arr_last       bool            // arr.last()
+	arr_pop        bool            // arr.pop()
+	arr_delete     bool            // arr.delete()
+	arr_reverse    bool            // arr.reverse()
+	arr_init       bool            // [1, 2, 3]
+	arr_map        bool            // []map[key]value
+	type_name      bool            // var.type_name()
+	map_update     bool            // {...foo}
+	print_options  bool            // print option type
+	print_types    map[int]bool    // print() idx types
+	used_fns       map[string]bool // filled in by markused
+	used_consts    map[string]bool // filled in by markused
+	used_globals   map[string]bool // filled in by markused
+	used_syms      map[int]bool    // filled in by markused
+	used_veb_types []Type          // veb context types, filled in by checker
+	used_maps      int             // how many times maps were used, filled in by markused
+	used_none      int             // how many times `none` was used, filled in by markused
 	// json             bool            // json is imported
 	debugger       bool            // debugger is used
 	comptime_calls map[string]bool // resolved name to call on comptime
+	comptime_syms  map[int]bool    // resolved syms (generic)
 	comptime_for   bool            // uses $for
+	memory_align   bool            // @[aligned] for struct
 }
 
 @[unsafe]
@@ -1318,6 +1316,9 @@ pub fn (mut t Table) find_or_register_fn_type(f Fn, is_anon bool, has_decl bool)
 	anon := f.name == '' || is_anon
 	existing_idx := t.type_idxs[name]
 	if existing_idx > 0 && t.type_symbols[existing_idx].kind != .placeholder {
+		if t.type_symbols[existing_idx].info is FnType && !has_decl {
+			t.type_symbols[existing_idx].info.has_decl = has_decl
+		}
 		return existing_idx
 	}
 	return t.register_sym(

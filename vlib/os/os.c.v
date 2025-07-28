@@ -9,6 +9,7 @@ $if freebsd || openbsd {
 	#include <sys/sysctl.h>
 }
 
+@[markused]
 pub const args = arguments()
 
 fn C.readdir(voidptr) &C.dirent
@@ -1047,8 +1048,7 @@ pub fn execve(cmdpath string, cmdargs []string, envs []string) ! {
 	}
 }
 
-// is_atty returns 1 if the `fd` file descriptor is open and refers to a
-// terminal.
+// is_atty returns 1 if the `fd` file descriptor is open and refers to a terminal.
 pub fn is_atty(fd int) int {
 	$if windows {
 		mut mode := u32(0)

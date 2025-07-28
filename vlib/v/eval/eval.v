@@ -64,6 +64,7 @@ pub mut:
 	scope_idx              int      // this is increased when e.open_scope() is called, decreased when e.close_scope() (and all variables with that scope level deleted)
 	returning              bool
 	return_values          []Object
+	executed_return_stmt   bool // already executed a return stmt in func
 	cur_mod                string
 	cur_file               string
 
@@ -152,9 +153,14 @@ pub fn (mut e Eval) run_func(func ast.FnDecl, _args ...Object) {
 				scope_idx: e.scope_idx
 			}
 		}
+		prev_executed_return_stmt := e.executed_return_stmt
+		e.executed_return_stmt = false
+		e.returning = false
+		e.return_values = []
 		e.stmts(func.stmts)
 		e.returning = false
 		e.close_scope()
+		e.executed_return_stmt = prev_executed_return_stmt
 		e.scope_idx = old_scope
 		e.local_vars = e.local_vars_stack.pop()
 	}
@@ -179,7 +185,14 @@ pub fn (mut e Eval) register_symbols(mut files []&ast.File) {
 		for file, fields in const_files {
 			e.cur_file = file
 			for _, field in fields {
+				e.returning = true
+				e.return_values = []
+				prev_executed_return_stmt := e.executed_return_stmt
+				e.executed_return_stmt = false
 				e.mods[mod][field.name.all_after_last('.')] = e.expr(field.expr, field.typ)
+				e.returning = false
+				e.return_values = []
+				e.executed_return_stmt = prev_executed_return_stmt
 				if mod == 'os' && field.name.all_after_last('.') == 'args' {
 					mut res := Array{}
 					res.val << e.pref.out_name.all_after_last('/')
@@ -202,15 +215,104 @@ pub fn (mut e Eval) register_symbol_stmts(stmts []ast.Stmt, mod string, file str
 pub fn (mut e Eval) comptime_cond(cond ast.Expr) bool {
 	match cond {
 		ast.Ident {
-			match cond.name {
-				'native' {
-					return false
+			cname := cond.name
+			if cname in ast.valid_comptime_if_os {
+				mut ident_result := false
+				if !e.pref.output_cross_c {
+					if cname_enum_val := pref.os_from_string(cname) {
+						if cname_enum_val == e.pref.os {
+							ident_result = true
+						}
+					}
 				}
-				'windows' {
-					return e.pref.os == .windows
+				$if trace_comptime_os_checks ? {
+					eprintln('>>> ident_name: ${ident_name} | e.pref.os: ${e.pref.os} | ident_result: ${ident_result}')
 				}
-				else {
-					e.error('unknown compile time if')
+				return ident_result
+			} else if cname in ast.valid_comptime_if_compilers {
+				return pref.cc_from_string(cname) == e.pref.ccompiler_type
+			} else if cname in ast.valid_comptime_if_platforms {
+				match cname {
+					'amd64' { return e.pref.arch == .amd64 }
+					'i386' { return e.pref.arch == .i386 }
+					'aarch64' { return e.pref.arch == .arm64 }
+					'arm64' { return e.pref.arch == .arm64 }
+					'arm32' { return e.pref.arch == .arm32 }
+					'rv64' { return e.pref.arch == .rv64 }
+					'rv32' { return e.pref.arch == .rv32 }
+					's390x' { return e.pref.arch == .s390x }
+					'ppc64le' { return e.pref.arch == .ppc64le }
+					'loongarch64' { return e.pref.arch == .loongarch64 }
+					else { e.error('unknown comptime platforms \$if ${cname}') }
+				}
+			} else if cname in ast.valid_comptime_if_cpu_features {
+				match cname {
+					'x64' { e.pref.m64 }
+					'x32' { !e.pref.m64 }
+					else { e.error('unknown comptime cpu features \$if ${cname}') }
+				}
+			} else if cname in ast.valid_comptime_if_other {
+				match cname {
+					'apk' {
+						return e.pref.is_apk
+					}
+					'js' {
+						return e.pref.backend.is_js()
+					}
+					'debug' {
+						return e.pref.is_debug
+					}
+					'prod' {
+						return e.pref.is_prod
+					}
+					'profile' {
+						return e.pref.is_prof
+					}
+					'test' {
+						return e.pref.is_test
+					}
+					'musl' {
+						e.error('unknown comptime other \$if ${cname}')
+					}
+					'glibc' {
+						e.error('unknown comptime other \$if ${cname}')
+					}
+					'threads' {
+						return e.table.gostmts > 0
+					}
+					'prealloc' {
+						return e.pref.prealloc
+					}
+					'no_bounds_checking' {
+						return cname in e.pref.compile_defines_all
+					}
+					'autofree' {
+						return e.pref.autofree
+					}
+					'freestanding' {
+						return e.pref.is_bare && !e.pref.output_cross_c
+					}
+					'interpreter' {
+						return e.pref.backend == .interpret
+					}
+					'es5' {
+						return e.pref.output_es5
+					}
+					'wasm32' {
+						return e.pref.os == .wasm32
+					}
+					'wasm32_wasi' {
+						return e.pref.os == .wasm32_wasi
+					}
+					'fast_math' {
+						return e.pref.fast_math
+					}
+					'native' {
+						return e.pref.backend == .native
+					}
+					else {
+						e.error('unknown comptime other \$if ${cname}')
+					}
 				}
 			}
 		}
@@ -223,6 +325,11 @@ pub fn (mut e Eval) comptime_cond(cond ast.Expr) bool {
 					e.error('unsupported prefix expression')
 				}
 			}
+		}
+		ast.InfixExpr {
+			left := e.comptime_cond(cond.left)
+			right := e.comptime_cond(cond.right)
+			return e.infix_expr(left, right, cond.op, ast.bool_type) as bool
 		}
 		else {
 			e.error('unsupported expression')

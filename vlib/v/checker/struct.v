@@ -17,6 +17,7 @@ fn (mut c Checker) struct_decl(mut node ast.StructDecl) {
 	}
 	node_name := if node.scoped_name != '' { node.scoped_name } else { node.name }
 	mut struct_sym, struct_typ_idx := c.table.find_sym_and_type_idx(node_name)
+	node.idx = struct_typ_idx
 	mut has_generic_types := false
 	if mut struct_sym.info is ast.Struct {
 		for mut symfield in struct_sym.info.fields {
@@ -66,6 +67,10 @@ fn (mut c Checker) struct_decl(mut node ast.StructDecl) {
 		for attr in node.attrs {
 			if node.language != .c && attr.name == 'typedef' {
 				c.error('`typedef` attribute can only be used with C structs', node.pos)
+			}
+			aligned := if attr.arg == '' { 0 } else { attr.arg.int() }
+			if aligned > 1 {
+				c.table.used_features.memory_align = true
 			}
 		}
 
@@ -460,10 +465,6 @@ fn (mut c Checker) struct_init(mut node ast.StructInit, is_field_zero_struct_ini
 			node.typ = c.expected_type
 		}
 	}
-	if c.pref.skip_unused && !c.is_builtin_mod && !c.table.used_features.external_types {
-		type_str := c.table.type_to_str(node.typ)
-		c.table.used_features.external_types = type_str.contains('.') && type_str.len > 1
-	}
 	struct_sym := c.table.sym(node.typ)
 	mut old_inside_generic_struct_init := false
 	mut old_cur_struct_generic_types := []ast.Type{}
@@ -523,16 +524,6 @@ fn (mut c Checker) struct_init(mut node ast.StructInit, is_field_zero_struct_ini
 			c.error('union `${struct_sym.name}` can have only one field initialised',
 				node.pos)
 		}
-	} else if struct_sym.info is ast.Alias {
-		parent_sym := c.table.sym(struct_sym.info.parent_type)
-		// e.g. ´x := MyMapAlias{}´, should be a cast to alias type ´x := MyMapAlias(map[...]...)´
-		if parent_sym.kind == .map {
-			alias_str := c.table.type_to_str(node.typ)
-			map_str := c.table.type_to_str(struct_sym.info.parent_type)
-			c.error('direct map alias init is not possible, use `${alias_str}(${map_str}{})` instead',
-				node.pos)
-			return ast.void_type
-		}
 	} else if struct_sym.info is ast.FnType {
 		c.error('functions must be defined, not instantiated like structs', node.pos)
 	}
@@ -540,6 +531,9 @@ fn (mut c Checker) struct_init(mut node ast.StructInit, is_field_zero_struct_ini
 	if c.table.cur_fn != unsafe { nil } && c.table.cur_fn.generic_names.len > 0 {
 		c.table.unwrap_generic_type_ex(node.typ, c.table.cur_fn.generic_names, c.table.cur_concrete_types,
 			true)
+		if c.pref.skip_unused && node.typ.has_flag(.generic) {
+			c.table.used_features.comptime_syms[c.unwrap_generic(node.typ)] = true
+		}
 	}
 	if !is_field_zero_struct_init {
 		c.ensure_type_exists(node.typ, node.pos)
@@ -649,8 +643,8 @@ fn (mut c Checker) struct_init(mut node ast.StructInit, is_field_zero_struct_ini
 					.struct {
 						info = sym.info as ast.Struct
 					}
-					.array, .array_fixed {
-						// we do allow []int{}, [10]int{}
+					.array, .array_fixed, .map {
+						// we do allow []int{}, [10]int{}, map[string]int{}
 					}
 					else {
 						c.error('alias type name: ${sym.name} is not struct type', node.pos)
@@ -871,6 +865,8 @@ or use an explicit `unsafe{ a[..] }`, if you do not want a copy of the slice.',
 				mut info := first_sym.info as ast.Struct
 				c.check_uninitialized_struct_fields_and_embeds(node, first_sym, mut info, mut
 					inited_fields)
+			} else if first_sym.kind == .array {
+				c.table.used_features.arr_init = true
 			}
 		}
 		.none {

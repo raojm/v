@@ -171,7 +171,8 @@ pub mut:
 	cppcompiler               string       // the name of the CPP compiler used
 	third_party_option        string
 	building_v                bool
-	no_bounds_checking        bool   // `-no-bounds-checking` turns off *all* bounds checks for all functions at runtime, as if they all had been tagged with `[direct_array_access]`
+	no_bounds_checking        bool   // `-no-bounds-checking` turns off *all* bounds checks for all functions at runtime, as if they all had been tagged with `@[direct_array_access]`
+	force_bounds_checking     bool   // `-force-bounds-checking` turns ON *all* bounds checks, even for functions that *were* tagged with `@[direct_array_access]`
 	autofree                  bool   // `v -manualfree` => false, `v -autofree` => true; false by default for now.
 	print_autofree_vars       bool   // print vars that are not freed by autofree
 	print_autofree_vars_in_fn string // same as above, but only for a single fn
@@ -249,6 +250,8 @@ pub mut:
 	wasm_stack_top    int = 1024 + (16 * 1024) // stack size for webassembly backend
 	wasm_validate     bool // validate webassembly code, by calling `wasm-validate`
 	warn_about_allocs bool // -warn-about-allocs warngs about every single allocation, e.g. 'hi $name'. Mostly for low level development where manual memory management is used.
+	// game prototyping flags:
+	div_by_zero_is_zero bool // -div-by-zero-is-zero makes so `x / 0 == 0`, i.e. eliminates the division by zero panics/segfaults
 	// temp
 	// use_64_int bool
 	// forwards compatibility settings:
@@ -546,6 +549,9 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 			'-warn-about-allocs' {
 				res.warn_about_allocs = true
 			}
+			'-div-by-zero-is-zero' {
+				res.div_by_zero_is_zero = true
+			}
 			'-sourcemap-src-included' {
 				res.sourcemap_src_included = true
 			}
@@ -639,6 +645,9 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				res.compile_defines << 'no_bounds_checking'
 				res.compile_defines_all << 'no_bounds_checking'
 				res.build_options << arg
+			}
+			'-force-bounds-checking' {
+				res.force_bounds_checking = true
 			}
 			'-no-builtin' {
 				res.no_builtin = true
@@ -1035,6 +1044,11 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 				eprintln_exit('Unknown argument `${arg}`${err_detail}')
 			}
 		}
+	}
+	if res.force_bounds_checking {
+		res.no_bounds_checking = false
+		res.compile_defines = res.compile_defines.filter(it == 'no_bounds_checking')
+		res.compile_defines_all = res.compile_defines_all.filter(it == 'no_bounds_checking')
 	}
 	if res.trace_calls {
 		if res.trace_fns.len == 0 {

@@ -643,6 +643,7 @@ fn (mut c Checker) alias_type_decl(mut node ast.AliasTypeDecl) {
 			info := parent_typ_sym.info as ast.Map
 			c.check_alias_vs_element_type_of_parent(node, info.key_type, 'map key')
 			c.check_alias_vs_element_type_of_parent(node, info.value_type, 'map value')
+			c.markused_used_maps(c.table.used_features.used_maps == 0)
 		}
 		.sum_type {
 			// TODO: decide whether the following should be allowed. Note that it currently works,
@@ -1419,8 +1420,6 @@ fn (mut c Checker) check_expr_option_or_result_call(expr ast.Expr, ret_type ast.
 }
 
 fn (mut c Checker) check_or_expr(node ast.OrExpr, ret_type ast.Type, expr_return_type ast.Type, expr ast.Expr) {
-	c.markused_option_or_result(!c.is_builtin_mod && node.kind != .absent && c.mod != 'strings')
-
 	if node.kind == .propagate_option {
 		if c.table.cur_fn != unsafe { nil } && !c.table.cur_fn.return_type.has_flag(.option)
 			&& !c.table.cur_fn.is_main && !c.table.cur_fn.is_test && !c.inside_const {
@@ -1822,8 +1821,6 @@ fn (mut c Checker) selector_expr(mut node ast.SelectorExpr) ast.Type {
 			c.check_or_expr(node.or_block, unwrapped_typ, c.expected_or_type, node)
 			c.expected_or_type = ast.void_type
 		}
-		c.markused_option_or_result(node.or_block.kind != .absent
-			&& !c.table.used_features.option_or_result)
 		return field.typ
 	}
 	if mut method := c.table.sym(c.unwrap_generic(typ)).find_method_with_generic_parent(field_name) {
@@ -2362,7 +2359,7 @@ fn (mut c Checker) stmt(mut node ast.Stmt) {
 		}
 		ast.Module {
 			c.mod = node.name
-			c.is_just_builtin_mod = node.name == 'builtin'
+			c.is_just_builtin_mod = node.name in ['builtin', 'builtin.closure']
 			c.is_builtin_mod = c.is_just_builtin_mod || node.name in ['os', 'strconv']
 			c.check_valid_snake_case(node.name, 'module name', node.pos)
 		}
@@ -2982,9 +2979,6 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 			node.expr_type = c.expr(mut node.expr)
 			expr_type_sym := c.table.sym(node.expr_type)
 			type_sym := c.table.sym(c.unwrap_generic(node.typ))
-			if !c.is_builtin_mod {
-				c.table.used_features.as_cast = true
-			}
 			if mut node.expr is ast.Ident {
 				if mut node.expr.obj is ast.Var {
 					ident_typ := if node.expr.obj.smartcasts.len > 0 {
@@ -3143,6 +3137,10 @@ pub fn (mut c Checker) expr(mut node ast.Expr) ast.Type {
 			c.inside_if_guard = true
 			node.expr_type = c.expr(mut node.expr)
 			c.inside_if_guard = old_inside_if_guard
+			if c.pref.skip_unused && node.expr_type.has_flag(.generic) {
+				unwrapped_type := c.unwrap_generic(node.expr_type)
+				c.table.used_features.comptime_syms[unwrapped_type] = true
+			}
 			if !node.expr_type.has_flag(.option) && !node.expr_type.has_flag(.result) {
 				mut no_opt_or_res := true
 				match mut node.expr {
@@ -3441,6 +3439,9 @@ fn (mut c Checker) cast_expr(mut node ast.CastExpr) ast.Type {
 		// allow conversion from none to every option type
 	} else if to_sym.kind == .sum_type {
 		to_sym_info := to_sym.info as ast.SumType
+		if c.pref.skip_unused && to_sym_info.concrete_types.len > 0 {
+			c.table.used_features.comptime_syms[to_type] = true
+		}
 		if to_sym_info.generic_types.len > 0 && to_sym_info.concrete_types.len == 0 {
 			c.error('generic sumtype `${to_sym.name}` must specify type parameter, e.g. ${to_sym.name}[int]',
 				node.pos)
@@ -4117,7 +4118,6 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 			c.error('`mut` is not allowed with `=` (use `:=` to declare a variable)',
 				node.pos)
 		}
-		c.markused_external_type(!c.is_builtin_mod && node.language == .v && node.name.contains('.'))
 		if mut obj := node.scope.find(node.name) {
 			match mut obj {
 				ast.GlobalField {
@@ -4302,6 +4302,9 @@ fn (mut c Checker) ident(mut node ast.Ident) ast.Type {
 	if node.language == .c {
 		if node.name == 'C.NULL' {
 			return ast.voidptr_type
+		}
+		if x := c.table.global_scope.find_const(node.name) {
+			return x.typ
 		}
 		return ast.int_type
 	}
@@ -5229,6 +5232,9 @@ fn (mut c Checker) chan_init(mut node ast.ChanInit) ast.Type {
 		}
 		if node.has_cap {
 			c.check_array_init_para_type('cap', mut node.cap_expr, node.pos)
+		}
+		if c.pref.skip_unused && node.typ.has_flag(.generic) {
+			c.table.used_features.comptime_syms[c.unwrap_generic(node.typ)] = true
 		}
 		return node.typ
 	} else {

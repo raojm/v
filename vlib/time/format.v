@@ -5,6 +5,16 @@ module time
 
 import strings
 
+fn iclamp(x int, a int, b int) int {
+	if x < a {
+		return a
+	}
+	if x > b {
+		return b
+	}
+	return x
+}
+
 // int_to_byte_array_no_pad fulfill buffer by part
 // it doesn't pad with leading zeros for performance reasons
 @[direct_array_access]
@@ -401,10 +411,10 @@ pub fn (t Time) custom_format(s string) string {
 				sb.write_string(ordinal_suffix(t.month))
 			}
 			'MMM' {
-				sb.write_string(long_months[t.month - 1][0..3])
+				sb.write_string(long_months[iclamp(0, t.month - 1, 11)][0..3])
 			}
 			'MMMM' {
-				sb.write_string(long_months[t.month - 1])
+				sb.write_string(long_months[iclamp(0, t.month - 1, 11)])
 			}
 			'D' {
 				sb.write_string(t.day.str())
@@ -428,16 +438,16 @@ pub fn (t Time) custom_format(s string) string {
 				sb.write_string('${t.day_of_week() % 7}')
 			}
 			'dd' {
-				sb.write_string(long_days[t.day_of_week() - 1][0..2])
+				sb.write_string(long_days[iclamp(0, t.day_of_week() - 1, 6)][0..2])
 			}
 			'ddd' {
-				sb.write_string(long_days[t.day_of_week() - 1][0..3])
+				sb.write_string(long_days[iclamp(0, t.day_of_week() - 1, 6)][0..3])
 			}
 			'dddd' {
-				sb.write_string(long_days[t.day_of_week() - 1])
+				sb.write_string(long_days[iclamp(0, t.day_of_week() - 1, 6)])
 			}
 			'YY' {
-				sb.write_string(t.year.str()[2..4])
+				sb.write_string(t.year.str()#[2..4])
 			}
 			'YYYY' {
 				sb.write_string(t.year.str())
@@ -562,7 +572,8 @@ pub fn (t Time) custom_format(s string) string {
 	return sb.str()
 }
 
-// clean returns a date string in a following format:
+// clean returns a date string in a clean form.
+// It has the following format:
 // - a date string in "HH:mm" format (24h) for current day
 // - a date string in "MMM D HH:mm" format (24h) for date of current year
 // - a date string formatted with format function for other dates
@@ -579,7 +590,8 @@ pub fn (t Time) clean() string {
 	return t.format()
 }
 
-// clean12 returns a date string in a following format:
+// clean12 returns a date string in a clean form.
+// It has the following format:
 // - a date string in "hh:mm" format (12h) for current day
 // - a date string in "MMM D hh:mm" format (12h) for date of current year
 // - a date string formatted with format function for other dates
@@ -653,8 +665,7 @@ pub fn (t Time) get_fmt_date_str(fmt_dlmtr FormatDelimiter, fmt_date FormatDate)
 	return res
 }
 
-// get_fmt_str returns a date string with specified FormatDelimiter,
-// FormatTime type, and FormatDate type.
+// get_fmt_str returns a date string with specified FormatDelimiter, FormatTime type, and FormatDate type.
 pub fn (t Time) get_fmt_str(fmt_dlmtr FormatDelimiter, fmt_time FormatTime, fmt_date FormatDate) string {
 	if fmt_date == .no_date {
 		if fmt_time == .no_time {

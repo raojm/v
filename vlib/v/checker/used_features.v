@@ -1,13 +1,8 @@
+// Copyright (c) 2019-2024 Felipe Pena. All rights reserved.
+// Use of this source code is governed by an MIT license that can be found in the LICENSE file.
 module checker
 
 import v.ast
-
-@[inline]
-fn (mut c Checker) markused_option_or_result(check bool) {
-	if check {
-		c.table.used_features.option_or_result = true
-	}
-}
 
 @[inline]
 fn (mut c Checker) markused_comptime_call(check bool, key string) {
@@ -32,7 +27,11 @@ fn (mut c Checker) markused_dumpexpr(mut node ast.DumpExpr) {
 	if c.is_builtin_mod {
 		return
 	}
-	if !c.table.sym(c.unwrap_generic(node.expr_type)).has_method('str') {
+	unwrapped_type := c.unwrap_generic(node.expr_type)
+	if node.expr_type.has_flag(.generic) {
+		c.table.used_features.comptime_syms[unwrapped_type] = true
+	}
+	if !c.table.sym(unwrapped_type).has_method('str') {
 		c.table.used_features.auto_str = true
 		if node.expr_type.is_ptr() {
 			c.table.used_features.auto_str_ptr = true
@@ -61,12 +60,6 @@ fn (mut c Checker) markused_castexpr(mut node ast.CastExpr, to_type ast.Type, mu
 	}
 	if c.mod !in ['strings', 'math.bits'] && to_type.is_ptr() {
 		c.table.used_features.cast_ptr = true
-	}
-}
-
-fn (mut c Checker) markused_external_type(check bool) {
-	if check {
-		c.table.used_features.external_types = true
 	}
 }
 
@@ -112,15 +105,6 @@ fn (mut c Checker) markused_comptimefor(mut node ast.ComptimeFor, unwrapped_expr
 }
 
 fn (mut c Checker) markused_call_expr(left_type ast.Type, mut node ast.CallExpr) {
-	if !c.is_builtin_mod && c.mod == 'main' && !c.table.used_features.external_types {
-		if node.is_method {
-			if c.table.sym(node.left_type).is_builtin() {
-				c.table.used_features.external_types = true
-			}
-		} else if node.name.contains('.') {
-			c.table.used_features.external_types = true
-		}
-	}
 	if left_type != 0 && left_type.is_ptr() && !c.table.used_features.auto_str_ptr
 		&& node.name == 'str' {
 		c.table.used_features.auto_str_ptr = true
@@ -135,7 +119,7 @@ fn (mut c Checker) markused_fn_call(mut node ast.CallExpr) {
 			c.table.used_features.auto_str = true
 		} else {
 			if node.args[0].typ.has_option_or_result() {
-				c.table.used_features.option_or_result = true
+				c.table.used_features.print_options = true
 			}
 			c.table.used_features.print_types[node.args[0].typ.idx()] = true
 			if !c.table.used_features.auto_str_ptr && node.args[0].expr is ast.Ident {
@@ -181,14 +165,17 @@ fn (mut c Checker) markused_string_inter_lit(mut node ast.StringInterLiteral, ft
 	if ftyp.is_ptr() {
 		c.table.used_features.auto_str_ptr = true
 	}
-	c.table.used_features.interpolation = true
+	if ftyp.has_option_or_result() {
+		c.table.used_features.print_options = true
+	}
 }
 
-fn (mut c Checker) markused_infiexpr(check bool) {
-	if check {
-		c.table.used_features.index = true
-		c.table.used_features.arr_init = true
+fn (mut c Checker) markused_infixexpr(check bool) {
+	if !check {
+		return
 	}
+	c.table.used_features.index = true
+	c.table.used_features.arr_init = true
 }
 
 fn (mut c Checker) markused_array_method(check bool, method_name string) {

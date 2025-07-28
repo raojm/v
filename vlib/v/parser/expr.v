@@ -83,8 +83,11 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 					p.tok.pos())
 			} else if p.tok.kind == .question && p.peek_tok.kind == .amp {
 				node = p.prefix_expr()
-			} else if p.inside_for_expr && p.tok.kind == .name && p.tok.lit[0].is_capital()
-				&& p.peek_tok.kind == .lcbr && p.peek_token(2).kind in [.rcbr, .name] {
+			} else if p.inside_for_expr && p.tok.kind == .name && ((p.tok.lit[0].is_capital()
+				&& p.peek_tok.kind == .lcbr && p.peek_token(2).kind in [.rcbr, .name])
+				|| (p.inside_array_lit && p.peek_tok.kind == .dot && p.peek_token(2).kind == .name
+				&& p.peek_token(2).lit[0].is_capital() && p.peek_token(3).kind == .lcbr
+				&& p.peek_token(4).kind in [.rcbr, .name])) {
 				node = p.struct_init(p.mod + '.' + p.tok.lit, .normal, false)
 			} else if p.is_generic_name() && p.peek_tok.kind == .lcbr
 				&& p.peek_token(2).kind == .rcbr && p.peek_token(2).line_nr == p.tok.line_nr {
@@ -473,6 +476,9 @@ fn (mut p Parser) check_expr(precedence int) !ast.Expr {
 			} else {
 				// Anonymous function
 				node = p.anon_fn()
+				if p.file_backend_mode == .v || p.file_backend_mode == .c {
+					p.register_auto_import('builtin.closure')
+				}
 				// its a call
 				// NOTE: this could be moved to just before the pratt loop
 				// then anything can be a call, eg. `index[2]()` or `struct.field()`
