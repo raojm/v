@@ -133,7 +133,7 @@ fn (g Gen) get_type_size_offset(type_symbol ast.TypeSymbol) string {
 		size_,align_ = g.table.type_size(type_symbol.idx)
 	}
 
-	if type_symbol.language == ast.Language.c && type_symbol.info is ast.Struct{
+	if (!g.pref.skip_unused || type_symbol.idx in g.table.used_features.used_syms) && type_symbol.language == ast.Language.c && type_symbol.info is ast.Struct{
 		info := type_symbol.info as ast.Struct
 
         mut c_struct_name := ''
@@ -171,7 +171,11 @@ fn (g Gen) get_field_size_offset(field &ast.StructField) string {
 				} else {
 					container_type_symbol.name
 				}
-				type_name = util.no_dots(sym_name)
+				if container_type_symbol.info is ast.Struct && container_type_symbol.info.is_generic {
+					type_name = ''
+				} else {
+					type_name = util.no_dots(sym_name)
+				}
 			}
 			.c {
 				if container_type_symbol.info is ast.Struct {
@@ -264,7 +268,11 @@ fn (mut g Gen) gen_reflection_sym_info(tsym ast.TypeSymbol) string {
 		.struct {
 			info := tsym.info as ast.Struct
 			attrs := g.gen_attrs_array(info.attrs)
-			fields := g.gen_fields_array(info.fields)
+			mut fields := g.gen_empty_array('${cprefix}StructField')
+
+			if !g.pref.skip_unused || tsym.idx in g.table.used_features.used_syms {
+				fields = g.gen_fields_array(info.fields)
+			}
 			s := 'ADDR(${cprefix}Struct,(((${cprefix}Struct){.parent_idx=${(tsym.info as ast.Struct).parent_type.idx()},.attrs=${attrs},.fields=${fields}})))'
 			return '(${cprefix}TypeInfo){._${cprefix}Struct=memdup(${s},sizeof(${cprefix}Struct)),._typ=${g.table.find_type_idx('v.reflection.Struct')}}'
 		}
