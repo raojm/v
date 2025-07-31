@@ -309,6 +309,9 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 	if v.pref.is_o {
 		ccoptions.args << '-c'
 	}
+	if v.pref.is_staticlib {
+		ccoptions.args << '-c'
+	}
 
 	ccoptions.shared_postfix = '.so'
 	if v.pref.os == .macos {
@@ -602,6 +605,9 @@ fn (mut v Builder) setup_output_name() {
 			v.pref.out_name += v.ccoptions.shared_postfix
 		}
 	}
+	if v.pref.is_staticlib {
+		v.pref.out_name = v.pref.out_name.trim_right('.a')+".o"
+	}
 	if v.pref.build_mode == .build_module {
 		v.pref.out_name = v.pref.cache_manager.mod_postfix_with_key2cpath(v.pref.path,
 			'.o', v.pref.path) // v.out_name
@@ -860,6 +866,31 @@ pub fn (mut v Builder) cc() {
 	// eprintln('failed to run ldid2, try: brew install ldid')
 	// }
 	// }
+	if v.pref.is_staticlib {
+		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_right('.o')+'.a'
+		mut libtool_cmd := 'libtool -static -o '
+		$if windows {
+			libtool_cmd = 'lib.exe /nologo /out:'
+		}
+		mut staticlib_cmd := "${libtool_cmd}${staticlib_out} ${os.quoted_path(v.pref.out_name)}"
+		for flag in v.get_os_cflags() {
+			if flag.value.ends_with('.o') {
+				obj_path := os.real_path(flag.value)
+				opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.o', obj_path)
+				staticlib_cmd += " ${opath}"
+			} else if flag.value.ends_with('.a') {
+				lib_path := os.real_path(flag.value)
+				staticlib_cmd += " ${lib_path}"
+			}
+		}
+
+		res := os.execute(staticlib_cmd)
+		if res.exit_code != 0 {
+			println('build staticlib ${staticlib_out} failed, return.')
+			verror(res.output)
+			return
+		}
+	}
 }
 
 fn (mut b Builder) ensure_linuxroot_exists(sysroot string) {

@@ -182,6 +182,7 @@ const auto_complete_flags = [
 	'-live',
 	'-sharedlive',
 	'-shared',
+	'-staticlib',
 	'--enable-globals',
 	'-enable-globals',
 	'-autofree',

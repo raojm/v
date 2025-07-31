@@ -104,6 +104,7 @@ pub mut:
 	raw_vsh_tmp_prefix string // The prefix used for executables, when a script lacks the .vsh extension
 	is_livemain        bool   // main program that contains live/hot code
 	is_liveshared      bool   // a shared library, that will be used in a -live main program
+	is_staticlib       bool   // an ordinary static library, -staticlib no matter if it is live or not
 	is_shared          bool   // an ordinary shared library, -shared, no matter if it is live or not
 	is_o               bool   // building an .o file
 	is_prof            bool   // benchmark every function
@@ -570,6 +571,9 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 			}
 			'-shared' {
 				res.is_shared = true
+			}
+			'-staticlib' {
+				res.is_staticlib = true
 			}
 			'--enable-globals' {
 				eprintln_cond(show_output && !res.is_quiet, '`--enable-globals` flag is deprecated, please use `-enable-globals` instead')
@@ -1085,6 +1089,10 @@ pub fn parse_args_and_show_errors(known_external_commands []string, args []strin
 
 	if res.out_name.ends_with('.o') {
 		res.is_o = true
+	}
+
+	if res.out_name.ends_with('.a') {
+		res.is_staticlib = true
 	}
 
 	if command == 'run' && res.is_prod && os.is_atty(1) > 0 {
