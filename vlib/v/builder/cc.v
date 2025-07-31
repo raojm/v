@@ -890,6 +890,12 @@ pub fn (mut v Builder) cc() {
 			verror(res.output)
 			return
 		}
+
+		os.rm(v.pref.out_name) or {
+			if v.pref.is_verbose {
+				verror(' unable to delete obj file:${v.pref.out_name} err:${err}')
+			}
+		}
 	}
 }
 
