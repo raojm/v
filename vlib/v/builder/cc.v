@@ -594,7 +594,7 @@ fn (mut v Builder) thirdparty_object_args(ccoptions CcompilerOptions, middle []s
 }
 
 fn (mut v Builder) setup_output_name() {
-	if !v.pref.is_shared && v.pref.build_mode != .build_module && v.pref.os == .windows
+	if !v.pref.is_shared && !v.pref.is_staticlib && v.pref.build_mode != .build_module && v.pref.os == .windows
 		&& !v.pref.out_name.ends_with('.exe') {
 		v.pref.out_name += '.exe'
 	}
@@ -606,7 +606,7 @@ fn (mut v Builder) setup_output_name() {
 		}
 	}
 	if v.pref.is_staticlib {
-		v.pref.out_name = v.pref.out_name.trim_right('.a')+".o"
+		v.pref.out_name = v.pref.out_name.trim_right('.a')+ if v.pref.os == .windows {".obj"} else {".o"}
 	}
 	if v.pref.build_mode == .build_module {
 		v.pref.out_name = v.pref.cache_manager.mod_postfix_with_key2cpath(v.pref.path,
