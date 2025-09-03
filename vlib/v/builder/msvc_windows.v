@@ -282,7 +282,14 @@ pub fn (mut v Builder) cc_msvc() {
 	if v.pref.is_prod && !v.pref.no_prod_options {
 		a << '/O2'
 	}
-	if v.pref.is_debug {
+	if v.pref.is_staticlib {
+		a << '/O2'
+		a << '/MT'
+		a << '/DNDEBUG'
+		// /Zi generates a .pdb
+		// /Fd sets the pdb file name (so its not just vc140 all the time)
+		a << ['/Zi', '/Fd"${out_name_pdb}"']
+	} else if v.pref.is_debug {
 		a << '/MDd'
 		a << '/D_DEBUG'
 		// /Zi generates a .pdb
@@ -429,7 +436,7 @@ pub fn (mut v Builder) cc_msvc() {
 	// println('C OUTPUT:')
 
 	if v.pref.is_staticlib {
-		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_right('.obj')+'.a'
+		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_right('.obj')+'.lib'
 		mut libtool_cmd := 'libtool -static -o '
 		$if windows {
 			libtool_cmd = '"${r.exe_path + os.path_separator}lib.exe" /nologo /out:'
@@ -441,7 +448,7 @@ pub fn (mut v Builder) cc_msvc() {
 				obj_path := os.real_path(flag.value.trim_right('.o')+'.obj')
 				// opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_path)
 				staticlib_cmd += " ${obj_path}"
-			} else if flag.value.ends_with('.a') {
+			} else if flag.value.ends_with('.lib') {
 				lib_path := os.real_path(flag.value)
 				staticlib_cmd += " ${lib_path}"
 			}
@@ -495,7 +502,15 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 	oargs << '/nologo' // NOTE: /NOLOGO is explicitly not recognised!
 	oargs << '/volatile:ms'
 
-	if v.pref.is_prod {
+	if v.pref.is_staticlib {
+		oargs << '/O2'
+		oargs << '/MT'
+		oargs << '/DNDEBUG'
+		// /Zi generates a .pdb
+		// /Fd sets the pdb file name (so its not just vc140 all the time)
+		out_name_pdb := os.real_path(path_without_o_postfix + '.pdb')
+		oargs << ['/Zi', '/Fd"${out_name_pdb}"']
+	} else if v.pref.is_prod {
 		if !v.pref.no_prod_options {
 			oargs << '/O2'
 			oargs << '/MD'
@@ -504,6 +519,10 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 	} else {
 		oargs << '/MDd'
 		oargs << '/D_DEBUG'
+		// /Zi generates a .pdb
+		// /Fd sets the pdb file name (so its not just vc140 all the time)
+		out_name_pdb := os.real_path(path_without_o_postfix + '.pdb')
+		oargs << ['/Zi', '/Fd"${out_name_pdb}"']
 	}
 	oargs << defines
 	oargs << msvc.include_paths()
