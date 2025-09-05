@@ -101,7 +101,7 @@ fn (mut v Builder) show_cc(cmd string, response_file string, response_file_conte
 		println('> C compiler cmd: ${cmd}')
 		if v.pref.show_cc && !v.pref.no_rsp {
 			println('> C compiler response file "${response_file}":')
-			println(response_file_content)
+			println("${response_file_content}")
 		}
 	}
 }

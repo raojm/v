@@ -241,6 +241,16 @@ fn (g &Gen) gen_string_array(strs []string) string {
 	return 'new_array_from_c_array(${strs.len},${strs.len},sizeof(string),_MOV((string[${strs.len}]){${items}}))'
 }
 
+// gen_int_array generates C code for []int
+@[inline]
+fn (g &Gen) gen_int_array(ints []i64) string {
+	if ints.len == 0 {
+		return g.gen_empty_array('int')
+	}
+	items := ints.map(it.str()).join(',')
+	return 'new_array_from_c_array(${ints.len},${ints.len},sizeof(int),_MOV((int[${ints.len}]){${items}}))'
+}
+
 // gen_reflection_sym_info generates C code for TypeSymbol's info sum type
 @[inline]
 fn (mut g Gen) gen_reflection_sym_info(tsym ast.TypeSymbol) string {
@@ -278,8 +288,10 @@ fn (mut g Gen) gen_reflection_sym_info(tsym ast.TypeSymbol) string {
 		}
 		.enum {
 			info := tsym.info as ast.Enum
+			enum_attrs := g.table.get_enum_field_vals(tsym.name)
 			vals := g.gen_string_array(info.vals)
-			s := 'ADDR(${cprefix}Enum,(((${cprefix}Enum){.vals=${vals},.is_flag=${info.is_flag}})))'
+			attrs := g.gen_int_array(enum_attrs)
+			s := 'ADDR(${cprefix}Enum,(((${cprefix}Enum){.vals=${vals},.attrs=${attrs},.is_flag=${info.is_flag}})))'
 			return '(${cprefix}TypeInfo){._${cprefix}Enum=memdup(${s},sizeof(${cprefix}Enum)),._typ=${g.table.find_type_idx('v.reflection.Enum')}}'
 		}
 		.function {

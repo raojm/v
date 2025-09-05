@@ -142,6 +142,7 @@ pub:
 pub struct Enum {
 pub:
 	vals    []string // enum values
+	attrs   []int // attributes of enum declaration
 	is_flag bool     // is flag?
 }
 
