@@ -4,6 +4,7 @@ import os
 import time
 import v.util
 import v.cflag
+import encoding.iconv
 
 #flag windows -l shell32
 #flag windows -l dbghelp
@@ -423,7 +424,7 @@ pub fn (mut v Builder) cc_msvc() {
 	res := os.execute(cmd)
 	if res.exit_code != 0 {
 		eprintln('================== ${c_compilation_error_title} (from msvc): ==============')
-		eprintln(res.output)
+		eprintln(iconv.encoding_to_vstring(res.output.bytes(), 'LOCAL') or { res.output })
 		verror('msvc error')
 	}
 	util.timing_measure('C msvc')
@@ -559,14 +560,14 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 		eprintln('   msvc: failed to build a thirdparty object, try: ${i}/${thirdparty_obj_build_max_retries}')
 		eprintln('    cmd: ${cmd}')
 		eprintln(' output:')
-		eprintln(res.output)
+		eprintln(iconv.encoding_to_vstring(res.output.bytes(), 'LOCAL') or { res.output })
 		eprintln('---------------------------------------------------------------------')
 		time.sleep(thirdparty_obj_build_retry_delay)
 	}
 	if res.exit_code != 0 {
 		verror('msvc: failed to build a thirdparty object after ${i}/${thirdparty_obj_build_max_retries} retries, cmd: ${cmd}')
 	}
-	println(res.output)
+	println(iconv.encoding_to_vstring(res.output.bytes(), 'LOCAL') or { res.output })
 	flush_stdout()
 }
 
