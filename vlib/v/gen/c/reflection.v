@@ -171,7 +171,7 @@ fn (g Gen) get_field_size_offset(field &ast.StructField) string {
 				} else {
 					container_type_symbol.name
 				}
-				if container_type_symbol.info is ast.Struct && container_type_symbol.info.is_generic {
+				if container_type_symbol.info is ast.Struct && (container_type_symbol.info.is_generic || container_type_symbol.info.is_minify) {
 					type_name = ''
 				} else {
 					type_name = util.no_dots(sym_name)
