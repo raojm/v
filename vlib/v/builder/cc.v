@@ -333,7 +333,7 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 		ccoptions.linker_flags << '-nostdlib'
 	} else if v.pref.os == .wasm32 {
 		ccoptions.args << '--no-standard-libraries'
-		ccoptions.args << '-target wasm32-unknown-unknown'
+		ccoptions.args << '-target wasm32-wasi'
 		ccoptions.args << '-static'
 		ccoptions.args << '-nostdlib'
 		ccoptions.args << '-ffreestanding'
@@ -707,7 +707,7 @@ pub fn (mut v Builder) cc() {
 		// if compilation fails, retry again with another
 		mut ccompiler := v.pref.ccompiler
 		if v.pref.os == .wasm32 {
-			ccompiler = 'clang'
+			// ccompiler = 'clang'
 		}
 		v.setup_ccompiler_options(ccompiler)
 		v.build_thirdparty_obj_files()
