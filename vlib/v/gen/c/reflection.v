@@ -58,6 +58,19 @@ fn (mut g Gen) gen_function_array(nodes []ast.Fn) string {
 	return out
 }
 
+// gen_functionattr_array generates the code for functionarg attr
+@[inline]
+fn (g Gen) gen_functionattr_array(type_name string, node ast.Fn) string {
+	if node.attrs.len == 0 {
+		return g.gen_empty_array(type_name)
+	}
+	mut out := 'new_array_from_c_array(${node.attrs.len},${node.attrs.len},sizeof(${type_name}),'
+	out += '_MOV((${type_name}[${node.attrs.len}]){'
+	out += node.attrs.map('((${type_name}){.name=_S("${it.name}"),.arg=_S("${it.arg}"),.has_arg=${it.has_arg}})').join(',')
+	out += '}))'
+	return out
+}
+
 // gen_reflection_fn generates C code for Function struct
 @[inline]
 fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
@@ -66,6 +79,14 @@ fn (mut g Gen) gen_reflection_fn(node ast.Fn) string {
 	arg_str += '.mod_name=_S("${node.mod}"),'
 	arg_str += '.name=_S("${v_name}"),'
 	arg_str += '.args=${g.gen_functionarg_array(cprefix + 'FunctionArg', node)},'
+	arg_str += '.attrs=${g.gen_functionattr_array(cprefix + 'FnAttr', node)},'
+
+	fkey := node.fkey()
+	is_used_by_main := g.table.used_features.used_fns[fkey]
+
+	if is_used_by_main && !node.is_conditional && node.source_fn != 0 && 0 == node.generic_names.len && node.mod != '' && node.mod !in ['builtin','arrays'] && node.name.starts_with('${node.mod}.') {
+		arg_str += '.fnptr=&${c_fn_name(node.name)},'
+	}
 	arg_str += '.file_idx=${g.reflection_string(util.cescaped_path(node.file))},'
 	arg_str += '.line_start=${node.pos.line_nr},'
 	arg_str += '.line_end=${node.pos.last_line},'
@@ -84,7 +105,7 @@ fn (mut g Gen) gen_reflection_sym(tsym ast.TypeSymbol) string {
 	name := tsym.name.all_after_last('.')
 	info := g.gen_reflection_sym_info(tsym)
 	methods := g.gen_function_array(tsym.methods)
-	return '(${cprefix}TypeSymbol){.name=_S("${name}"),.mod=_S("${tsym.mod}"),.idx=${tsym.idx},.parent_idx=${tsym.parent_idx},.language=${cprefix}VLanguage__${tsym.language},.kind=${cprefix}VKind__${kind_name},.info=${info},.methods=${methods}}'
+	return '(${cprefix}TypeSymbol){.name=_S("${name}"),.mod=_S("${tsym.mod}"),.idx=${tsym.idx},.parent_idx=${tsym.parent_idx},${g.get_type_size_offset(tsym)}.language=${cprefix}VLanguage__${tsym.language},.kind=${cprefix}VKind__${kind_name},.info=${info},.methods=${methods}}'
 }
 
 // gen_attrs_array generates C code for []Attr
@@ -104,6 +125,90 @@ fn (g &Gen) gen_attrs_array(attrs []ast.Attr) string {
 	return out
 }
 
+fn (g Gen) get_type_size_offset(type_symbol ast.TypeSymbol) string {
+	mut result := ''
+	mut size_ := 0
+	mut align_ := 0
+	if type_symbol.idx > 0 {
+		size_,align_ = g.table.type_size(type_symbol.idx)
+	}
+
+	if (!g.pref.skip_unused || type_symbol.idx in g.table.used_features.used_syms) && type_symbol.language == ast.Language.c && type_symbol.info is ast.Struct{
+		info := type_symbol.info as ast.Struct
+
+        mut c_struct_name := ''
+		if type_symbol.name in ['C.__stat64', 'C.DIR', 'C.termios']! || type_symbol.mod.starts_with('os') || info.is_union { //mac 没有__stat64结构, DIR比较异常
+			c_struct_name = ''
+		} else if _ := info.attrs.find_first('typedef') {
+			c_struct_name = type_symbol.name.replace_once('C.', '')
+		}
+		else {
+			c_struct_name = type_symbol.name.replace_once('C.', 'struct ')
+		}
+
+		result = if '' != c_struct_name {'.size=sizeof(${c_struct_name}),.align=__alignof(${c_struct_name}),'} else {''}
+
+	} else {
+		result = '.size=${size_},.align=${align_},'
+	}
+
+	return result
+}
+
+fn (g Gen) get_field_size_offset(field &ast.StructField) string {
+	mut result := '.size=0,.offset=0'
+	if field.container_typ > 0 &&  field.typ > 0 {
+		type_symbol := g.table.sym(field.typ)
+		container_type_symbol := g.table.sym(field.container_typ)
+		// if container_type_symbol.name.contains('TestStruct') {
+		// 	println(container_type_symbol.debug())
+		// }
+		mut type_name := ''
+		match container_type_symbol.language {
+			.v {
+				sym_name := if container_type_symbol.info is ast.Struct && container_type_symbol.info.scoped_name != '' {
+					container_type_symbol.info.scoped_name
+				} else {
+					container_type_symbol.name
+				}
+				if container_type_symbol.info is ast.Struct && (container_type_symbol.info.is_generic || container_type_symbol.info.is_minify) {
+					type_name = ''
+				} else {
+					type_name = util.no_dots(sym_name)
+				}
+			}
+			.c {
+				if container_type_symbol.info is ast.Struct {
+					info := container_type_symbol.info as ast.Struct
+					type_name = container_type_symbol.name.replace_once('C.', 'struct ')
+					//mac 没有__stat64结构
+					if container_type_symbol.name in ['C.__stat64', 'C.DIR', 'C.termios']! || container_type_symbol.mod.starts_with('os') || info.is_union {
+						type_name = ''
+					} else if _ := info.attrs.find_first('typedef') {
+						type_name = container_type_symbol.name.replace_once('C.', '')
+					}
+				}
+			}
+			else {
+
+			}
+		}
+
+		field_name := match container_type_symbol.language {
+			.v {
+				c_name(field.name)
+			}
+			else {
+				util.no_dots(field.name)
+			}
+		}
+
+		result = if '' != type_name { '.size=${type_symbol.size},.offset=__offsetof(${type_name},${field_name})' } else { '.size=${type_symbol.size},.offset=0' }
+	}
+
+	return result
+}
+
 // gen_fields_array generates C code for []StructField
 @[inline]
 fn (g &Gen) gen_fields_array(fields []ast.StructField) string {
@@ -112,7 +217,7 @@ fn (g &Gen) gen_fields_array(fields []ast.StructField) string {
 	}
 	mut out := 'builtin__new_array_from_c_array(${fields.len},${fields.len},sizeof(${cprefix}StructField),'
 	out += '_MOV((${cprefix}StructField[${fields.len}]){'
-	out += fields.map('((${cprefix}StructField){.name=_S("${it.name}"),.typ=${int(it.typ)},.attrs=${g.gen_attrs_array(it.attrs)},.is_pub=${it.is_pub},.is_mut=${it.is_mut}})').join(',')
+	out += fields.map('((${cprefix}StructField){.name=_S("${it.name}"),.typ=${int(it.typ)},.attrs=${g.gen_attrs_array(it.attrs)},.is_pub=${it.is_pub},.is_mut=${it.is_mut},${g.get_field_size_offset(it)} })').join(',')
 	out += '}))'
 	return out
 }
@@ -134,6 +239,16 @@ fn (g &Gen) gen_string_array(strs []string) string {
 	}
 	items := strs.map('_S("${it}")').join(',')
 	return 'builtin__new_array_from_c_array(${strs.len},${strs.len},sizeof(string),_MOV((string[${strs.len}]){${items}}))'
+}
+
+// gen_int_array generates C code for []int
+@[inline]
+fn (g &Gen) gen_int_array(ints []i64) string {
+	if ints.len == 0 {
+		return g.gen_empty_array('int')
+	}
+	items := ints.map(it.str()).join(',')
+	return 'new_array_from_c_array(${ints.len},${ints.len},sizeof(int),_MOV((int[${ints.len}]){${items}}))'
 }
 
 // gen_reflection_sym_info generates C code for TypeSymbol's info sum type
@@ -163,14 +278,20 @@ fn (mut g Gen) gen_reflection_sym_info(tsym ast.TypeSymbol) string {
 		.struct {
 			info := tsym.info as ast.Struct
 			attrs := g.gen_attrs_array(info.attrs)
-			fields := g.gen_fields_array(info.fields)
+			mut fields := g.gen_empty_array('${cprefix}StructField')
+
+			if !g.pref.skip_unused || tsym.idx in g.table.used_features.used_syms {
+				fields = g.gen_fields_array(info.fields)
+			}
 			s := 'ADDR(${cprefix}Struct,(((${cprefix}Struct){.parent_idx=${(tsym.info as ast.Struct).parent_type.idx()},.attrs=${attrs},.fields=${fields}})))'
 			return '(${cprefix}TypeInfo){._${cprefix}Struct=builtin__memdup(${s},sizeof(${cprefix}Struct)),._typ=${g.table.find_type_idx('v.reflection.Struct')}}'
 		}
 		.enum {
 			info := tsym.info as ast.Enum
+			enum_attrs := g.table.get_enum_field_vals(tsym.name)
 			vals := g.gen_string_array(info.vals)
-			s := 'ADDR(${cprefix}Enum,(((${cprefix}Enum){.vals=${vals},.is_flag=${info.is_flag}})))'
+			attrs := g.gen_int_array(enum_attrs)
+			s := 'ADDR(${cprefix}Enum,(((${cprefix}Enum){.vals=${vals},.attrs=${attrs},.is_flag=${info.is_flag}})))'
 			return '(${cprefix}TypeInfo){._${cprefix}Enum=builtin__memdup(${s},sizeof(${cprefix}Enum)),._typ=${g.table.find_type_idx('v.reflection.Enum')}}'
 		}
 		.function {
@@ -212,18 +333,22 @@ fn (mut g Gen) gen_reflection_data() {
 
 	// type symbols declaration
 	for _, tsym in g.table.type_symbols {
+		if int(tsym.kind) > int(ast.Kind.none) && tsym.kind != ast.Kind.array_fixed && !tsym.mod.starts_with("src.component") { continue }
 		sym := g.gen_reflection_sym(tsym)
 		g.writeln('\t${cprefix}add_type_symbol(${sym});')
 	}
 
 	// types declaration
 	for full_name, idx in g.table.type_idxs {
+		tsym := g.table.sym_by_idx(idx)
+		if int(tsym.kind) > int(ast.Kind.none) && tsym.kind != ast.Kind.array_fixed && !tsym.mod.starts_with("src.component") { continue }
 		name := full_name.all_after_last('.')
 		g.writeln('\t${cprefix}add_type((${cprefix}Type){.name=_S("${name}"),.idx=${idx}});')
 	}
 
 	// func declaration (methods come from struct methods)
 	for _, fn_ in g.table.fns {
+		if !fn_.mod.starts_with("src.system") { continue }
 		if fn_.no_body || fn_.is_method || fn_.language != .v {
 			continue
 		}

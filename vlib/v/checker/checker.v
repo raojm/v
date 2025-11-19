@@ -460,6 +460,10 @@ pub fn (mut c Checker) check_files(ast_files []&ast.File) {
 		// .o files also do not need main
 		return
 	}
+	if c.pref.is_staticlib {
+		// static libs do not need to have a main
+		return
+	}
 	if c.pref.no_builtin {
 		// `v -no-builtin module/` do not necessarily need to have a `main` function
 		// This is useful for compiling linux kernel modules for example.
@@ -471,7 +475,7 @@ pub fn (mut c Checker) check_files(ast_files []&ast.File) {
 	if !has_main_mod_file {
 		c.error('project must include a `main` module or be a shared library (compile with `v -shared`)',
 			token.Pos{})
-	} else if !has_main_fn && !c.pref.is_o {
+	} else if !has_main_fn && !c.pref.is_o && !c.pref.is_staticlib {
 		c.error('function `main` must be declared in the main module', token.Pos{})
 	}
 }

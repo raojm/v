@@ -142,6 +142,7 @@ pub:
 pub struct Enum {
 pub:
 	vals    []string // enum values
+	attrs   []int // attributes of enum declaration
 	is_flag bool     // is flag?
 }
 
@@ -152,6 +153,8 @@ pub:
 	attrs  []string // field attrs
 	is_pub bool     // is pub?
 	is_mut bool     // is mut?
+	size   int
+	offset int
 }
 
 pub struct Struct {
@@ -198,6 +201,8 @@ pub:
 	parent_idx int        // symbol parent idx
 	language   VLanguage  // language
 	kind       VKind      // kind
+	size	   int
+	align      int
 	info       TypeInfo   // info
 	methods    []Function // methods
 }
@@ -221,11 +226,32 @@ pub:
 	is_mut bool   // is mut?
 }
 
+pub enum FnAttrKind {
+	plain           // [name]
+	string          // ['name']
+	number          // [123]
+	bool            // [true] || [false]
+	comptime_define // [if name]
+}
+
+pub struct FnAttr {
+pub:
+	name    string // [name]
+	has_arg bool
+	arg     string // [name: arg]
+	kind    FnAttrKind
+	ct_opt  bool // true for [if user_defined_name?]
+	// pos     token.Pos
+	has_at  bool // new syntax `@[attr]`
+}
+
 pub struct Function {
 pub:
 	mod_name     string        // module name
 	name         string        // function/method name
 	args         []FunctionArg // function/method args
+	attrs		 []FnAttr
+	fnptr		 voidptr
 	file_idx     int           // source file name
 	line_start   int           // decl start line
 	line_end     int           // decl end line

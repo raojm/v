@@ -6685,7 +6685,7 @@ fn (mut g Gen) write_debug_calls_typeof_functions() {
 }
 
 fn (mut g Gen) write_init_function() {
-	if g.pref.no_builtin || (g.pref.translated && g.pref.is_o) {
+	if g.pref.no_builtin || (g.pref.translated && g.pref.is_o) || (g.pref.translated && g.pref.is_staticlib) {
 		return
 	}
 	util.timing_start(@METHOD)

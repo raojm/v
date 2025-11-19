@@ -4,6 +4,7 @@ import os
 import time
 import v.util
 import v.cflag
+import encoding.iconv
 
 #flag windows -l shell32
 #flag windows -l dbghelp
@@ -282,7 +283,14 @@ pub fn (mut v Builder) cc_msvc() {
 	if v.pref.is_prod && !v.pref.no_prod_options {
 		a << '/O2'
 	}
-	if v.pref.is_debug {
+	if v.pref.is_staticlib {
+		a << '/O2'
+		a << '/MT'
+		a << '/DNDEBUG'
+		// /Zi generates a .pdb
+		// /Fd sets the pdb file name (so its not just vc140 all the time)
+		a << ['/Zi', '/Fd"${out_name_pdb}"']
+	} else if v.pref.is_debug {
 		a << '/MDd'
 		a << '/D_DEBUG'
 		// /Zi generates a .pdb
@@ -303,12 +311,16 @@ pub fn (mut v Builder) cc_msvc() {
 		}
 		// Build dll
 		a << '/LD'
+	} else if v.pref.is_staticlib {
+		if !v.pref.out_name.ends_with('.obj') {
+			v.pref.out_name += '.obj'
+		}
 	} else if !v.pref.out_name.ends_with('.exe') {
 		v.pref.out_name += '.exe'
 	}
 	v.pref.out_name = os.real_path(v.pref.out_name)
 	// alibs := []string{} // builtin.o os.o http.o etc
-	if v.pref.build_mode == .build_module {
+	if v.pref.build_mode == .build_module || v.pref.is_staticlib  {
 		// Compile only
 		a << '/c'
 	} else if v.pref.build_mode == .default_mode {
@@ -353,7 +365,7 @@ pub fn (mut v Builder) cc_msvc() {
 	a << other_flags
 	// Libs are passed to cl.exe which passes them to the linker
 	a << real_libs.join(' ')
-	a << '/link'
+
 	if v.pref.is_shared {
 		// generate a .def for export function names, avoid function name mangle
 		// must put after the /link flag!
@@ -367,7 +379,12 @@ pub fn (mut v Builder) cc_msvc() {
 	}
 
 	a << '/nologo' // NOTE: /NOLOGO is explicitly not recognised!
-	a << '/OUT:${os.quoted_path(v.pref.out_name)}'
+	if v.pref.is_staticlib {
+		a << '/Fo${os.quoted_path(v.pref.out_name)}'
+	} else {
+		a << '/link'
+		a << '/OUT:${os.quoted_path(v.pref.out_name)}'
+	}
 	a << r.library_paths()
 	if !all_cflags.contains('/DEBUG') {
 		// only use /DEBUG, if the user *did not* provide its own:
@@ -408,7 +425,7 @@ pub fn (mut v Builder) cc_msvc() {
 	res := os.execute(cmd)
 	if res.exit_code != 0 {
 		eprintln('================== ${c_compilation_error_title} (from msvc): ==============')
-		eprintln(res.output)
+		eprintln(iconv.encoding_to_vstring(res.output.bytes(), 'LOCAL') or { res.output })
 		verror('msvc error')
 	}
 	util.timing_measure('C msvc')
@@ -419,6 +436,39 @@ pub fn (mut v Builder) cc_msvc() {
 	}
 	// println(res)
 	// println('C OUTPUT:')
+
+	if v.pref.is_staticlib {
+		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_right('.obj')+'.lib'
+		mut libtool_cmd := 'libtool -static -o '
+		$if windows {
+			libtool_cmd = '"${r.exe_path + os.path_separator}lib.exe" /nologo /out:'
+		}
+		mut staticlib_cmd := "${libtool_cmd}${staticlib_out} ${os.quoted_path(v.pref.out_name)}"
+
+		for flag in v.get_os_cflags() {
+			if flag.value.ends_with('.o') {
+				obj_path := os.real_path(flag.value.trim_right('.o')+'.obj')
+				// opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_path)
+				staticlib_cmd += " ${obj_path}"
+			} else if flag.value.ends_with('.lib') {
+				lib_path := os.real_path(flag.value)
+				staticlib_cmd += " ${lib_path}"
+			}
+		}
+
+		cmd_res := os.execute(staticlib_cmd)
+		if cmd_res.exit_code != 0 {
+			println('build staticlib ${staticlib_cmd} failed, return.')
+			verror(cmd_res.output)
+			return
+		}
+
+		os.rm(v.pref.out_name) or {
+			if v.pref.is_verbose {
+				verror(' unable to delete obj file:${v.pref.out_name} err:${err}')
+			}
+		}
+	}
 }
 
 fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string, moduleflags []cflag.CFlag) {
@@ -454,7 +504,15 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 	oargs << '/nologo' // NOTE: /NOLOGO is explicitly not recognised!
 	oargs << '/volatile:ms'
 
-	if v.pref.is_prod {
+	if v.pref.is_staticlib {
+		oargs << '/O2'
+		oargs << '/MT'
+		oargs << '/DNDEBUG'
+		// /Zi generates a .pdb
+		// /Fd sets the pdb file name (so its not just vc140 all the time)
+		out_name_pdb := os.real_path(path_without_o_postfix + '.pdb')
+		oargs << ['/Zi', '/Fd"${out_name_pdb}"']
+	} else if v.pref.is_prod {
 		if !v.pref.no_prod_options {
 			oargs << '/O2'
 			oargs << '/MD'
@@ -464,6 +522,10 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 	} else {
 		oargs << '/MDd'
 		oargs << '/D_DEBUG'
+		// /Zi generates a .pdb
+		// /Fd sets the pdb file name (so its not just vc140 all the time)
+		out_name_pdb := os.real_path(path_without_o_postfix + '.pdb')
+		oargs << ['/Zi', '/Fd"${out_name_pdb}"']
 	}
 	oargs << defines
 	oargs << msvc.include_paths()
@@ -500,14 +562,14 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 		eprintln('   msvc: failed to build a thirdparty object, try: ${i}/${thirdparty_obj_build_max_retries}')
 		eprintln('    cmd: ${cmd}')
 		eprintln(' output:')
-		eprintln(res.output)
+		eprintln(iconv.encoding_to_vstring(res.output.bytes(), 'LOCAL') or { res.output })
 		eprintln('---------------------------------------------------------------------')
 		time.sleep(thirdparty_obj_build_retry_delay)
 	}
 	if res.exit_code != 0 {
 		verror('msvc: failed to build a thirdparty object after ${i}/${thirdparty_obj_build_max_retries} retries, cmd: ${cmd}')
 	}
-	println(res.output)
+	println(iconv.encoding_to_vstring(res.output.bytes(), 'LOCAL') or { res.output })
 	flush_stdout()
 }
 

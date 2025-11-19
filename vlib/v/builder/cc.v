@@ -104,7 +104,7 @@ fn (mut v Builder) show_cc(cmd string, response_file string, response_file_conte
 		println('> C compiler cmd: ${cmd}')
 		if v.pref.show_cc && !v.pref.no_rsp {
 			println('> C compiler response file "${response_file}":')
-			println(response_file_content)
+			println("${response_file_content}")
 		}
 	}
 }
@@ -313,6 +313,9 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 	if v.pref.is_o {
 		ccoptions.args << '-c'
 	}
+	if v.pref.is_staticlib {
+		ccoptions.args << '-c'
+	}
 
 	ccoptions.shared_postfix = '.so'
 	if v.pref.os == .macos {
@@ -334,7 +337,7 @@ fn (mut v Builder) setup_ccompiler_options(ccompiler string) {
 		ccoptions.linker_flags << '-nostdlib'
 	} else if v.pref.os == .wasm32 {
 		ccoptions.args << '--no-standard-libraries'
-		ccoptions.args << '-target wasm32-unknown-unknown'
+		ccoptions.args << '-target wasm32-wasi'
 		ccoptions.args << '-static'
 		ccoptions.args << '-nostdlib'
 		ccoptions.args << '-ffreestanding'
@@ -595,7 +598,7 @@ fn (mut v Builder) thirdparty_object_args(ccoptions CcompilerOptions, middle []s
 }
 
 fn (mut v Builder) setup_output_name() {
-	if !v.pref.is_shared && v.pref.build_mode != .build_module && v.pref.os == .windows
+	if !v.pref.is_shared && !v.pref.is_staticlib && v.pref.build_mode != .build_module && v.pref.os == .windows
 		&& !v.pref.is_o && !v.pref.out_name.ends_with('.exe') {
 		v.pref.out_name += '.exe'
 	}
@@ -605,6 +608,9 @@ fn (mut v Builder) setup_output_name() {
 		if !v.pref.out_name.ends_with(v.ccoptions.shared_postfix) {
 			v.pref.out_name += v.ccoptions.shared_postfix
 		}
+	}
+	if v.pref.is_staticlib {
+		v.pref.out_name = v.pref.out_name.trim_right('.a')+ if v.pref.os == .windows {".obj"} else {".o"}
 	}
 	if v.pref.build_mode == .build_module {
 		v.pref.out_name = v.pref.cache_manager.mod_postfix_with_key2cpath(v.pref.path,
@@ -704,7 +710,7 @@ pub fn (mut v Builder) cc() {
 		// if compilation fails, retry again with another
 		mut ccompiler := v.pref.ccompiler
 		if v.pref.os == .wasm32 {
-			ccompiler = 'clang'
+			// ccompiler = 'clang'
 		}
 		v.setup_ccompiler_options(ccompiler)
 		v.build_thirdparty_obj_files()
@@ -863,6 +869,37 @@ pub fn (mut v Builder) cc() {
 	// eprintln('failed to run ldid2, try: brew install ldid')
 	// }
 	// }
+	if v.pref.is_staticlib {
+		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_right('.o')+'.a'
+		mut libtool_cmd := 'libtool -static -o '
+		$if windows {
+			libtool_cmd = 'lib.exe /nologo /out:'
+		}
+		mut staticlib_cmd := "${libtool_cmd}${staticlib_out} ${os.quoted_path(v.pref.out_name)}"
+		for flag in v.get_os_cflags() {
+			if flag.value.ends_with('.o') {
+				obj_path := os.real_path(flag.value)
+				opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.o', obj_path)
+				staticlib_cmd += " ${opath}"
+			} else if flag.value.ends_with('.a') {
+				lib_path := os.real_path(flag.value)
+				staticlib_cmd += " ${lib_path}"
+			}
+		}
+
+		res := os.execute(staticlib_cmd)
+		if res.exit_code != 0 {
+			println('build staticlib ${staticlib_out} failed, return.')
+			verror(res.output)
+			return
+		}
+
+		os.rm(v.pref.out_name) or {
+			if v.pref.is_verbose {
+				verror(' unable to delete obj file:${v.pref.out_name} err:${err}')
+			}
+		}
+	}
 }
 
 fn (mut b Builder) ensure_linuxroot_exists(sysroot string) {

@@ -80,8 +80,8 @@ fn (nn int) str_l(max int) string {
 			buf[index] = `-`
 		}
 		diff := max - index
-		vmemmove(buf, voidptr(buf + index), diff + 1)
-		return tos(buf, diff)
+		// vmemmove(buf, voidptr(buf + index), diff + 1)
+		return tos(buf+index, diff)
 
 		// return tos(memdup(&buf[0] + index, (max - index)), (max - index))
 	}
@@ -148,8 +148,8 @@ pub fn (nn u32) str() string {
 			index++
 		}
 		diff := max - index
-		vmemmove(buf, voidptr(buf + index), diff + 1)
-		return tos(buf, diff)
+		// vmemmove(buf, voidptr(buf + index), diff + 1)
+		return tos(buf+index, diff)
 
 		// return tos(memdup(&buf[0] + index, (max - index)), (max - index))
 	}
@@ -205,8 +205,8 @@ pub fn (nn i64) str() string {
 			buf[index] = `-`
 		}
 		diff := max - index
-		vmemmove(buf, voidptr(buf + index), diff + 1)
-		return tos(buf, diff)
+		// vmemmove(buf, voidptr(buf + index), diff + 1)
+		return tos(buf+index, diff)
 		// return tos(memdup(&buf[0] + index, (max - index)), (max - index))
 	}
 }
@@ -242,8 +242,8 @@ pub fn (nn u64) str() string {
 			index++
 		}
 		diff := max - index
-		vmemmove(buf, voidptr(buf + index), diff + 1)
-		return tos(buf, diff)
+		// vmemmove(buf, voidptr(buf + index), diff + 1)
+		return tos(buf+index, diff)
 		// return tos(memdup(&buf[0] + index, (max - index)), (max - index))
 	}
 }
