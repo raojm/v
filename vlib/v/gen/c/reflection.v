@@ -333,18 +333,22 @@ fn (mut g Gen) gen_reflection_data() {
 
 	// type symbols declaration
 	for _, tsym in g.table.type_symbols {
+		if int(tsym.kind) > int(ast.Kind.none) && tsym.kind != ast.Kind.array_fixed && !tsym.mod.starts_with("src.component") { continue }
 		sym := g.gen_reflection_sym(tsym)
 		g.writeln('\t${cprefix}add_type_symbol(${sym});')
 	}
 
 	// types declaration
 	for full_name, idx in g.table.type_idxs {
+		tsym := g.table.sym_by_idx(idx)
+		if int(tsym.kind) > int(ast.Kind.none) && tsym.kind != ast.Kind.array_fixed && !tsym.mod.starts_with("src.component") { continue }
 		name := full_name.all_after_last('.')
 		g.writeln('\t${cprefix}add_type((${cprefix}Type){.name=_S("${name}"),.idx=${idx}});')
 	}
 
 	// func declaration (methods come from struct methods)
 	for _, fn_ in g.table.fns {
+		if !fn_.mod.starts_with("src.system") { continue }
 		if fn_.no_body || fn_.is_method || fn_.language != .v {
 			continue
 		}
