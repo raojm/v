@@ -229,6 +229,9 @@ fn (data &StrIntpData) process_str_intp_data(mut sb strings.Builder) {
 					strconv.format_str_sb(data.d.d_s, bf, mut sb)
 				}
 			}
+			if data.isfree {
+				data.d.d_s.free();
+			}
 			return
 		}
 
@@ -689,6 +692,7 @@ pub:
 	// fmt     u64  // expanded version for future use, 64 bit
 	fmt u32
 	d   StrIntpMem
+	isfree bool
 }
 
 // interpolation function

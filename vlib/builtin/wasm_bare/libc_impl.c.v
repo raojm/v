@@ -2,6 +2,8 @@ module builtin
 
 //__global global_allocator dlmalloc.Dlmalloc
 
+#include <stdio.h>
+
 @[unsafe]
 pub fn __malloc(size usize) voidptr {
 	unsafe {
@@ -30,6 +32,7 @@ pub fn memcpy(dest &C.void, src &C.void, n usize) &C.void {
 	return unsafe { dest }
 }
 
+@[export: 'strlen']
 @[unsafe]
 fn strlen(_s &C.void) usize {
 	s := unsafe { &u8(_s) }
@@ -101,6 +104,7 @@ fn getchar() int {
 	return 0
 }
 
+@[export: 'memcmp']
 fn memcmp(a &C.void, b &C.void, n usize) int {
 	a_ := unsafe { &u8(a) }
 	b_ := unsafe { &u8(b) }
@@ -133,9 +137,11 @@ fn bare_read(buf &u8, count u64) (i64, Errno) {
 }
 
 pub fn bare_print(buf &u8, len u64) {
+	C.printf(c"%s", buf);
 }
 
 fn bare_eprint(buf &u8, len u64) {
+	C.printf(c"%s", buf);
 }
 
 pub fn write(_fd i64, _buf &u8, _count u64) i64 {
@@ -163,7 +169,7 @@ fn __exit(code int) {
 	for {}
 }
 
-@[export: 'qsort']
-fn __qsort(base voidptr, nmemb usize, size usize, sort_cb FnSortCB) {
-	panic('qsort() is not yet implemented in `-freestanding`')
-}
+// @[export: 'qsort']
+// fn __qsort(base voidptr, nmemb usize, size usize, sort_cb FnSortCB) {
+// 	panic('qsort() is not yet implemented in `-freestanding`')
+// }

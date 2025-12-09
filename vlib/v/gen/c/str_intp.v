@@ -363,7 +363,13 @@ fn (mut g Gen) string_inter_literal(node ast.StringInterLiteral) {
 			g.str_val(node, i, fmts)
 		}
 
-		g.write('}}')
+		expr_typ := g.unwrap_generic(node.expr_types[i])
+		expr_typ_sym := g.table.sym(expr_typ)
+		if ft_str == "s" && expr_typ_sym.kind == ast.Kind.struct {
+			g.write('}, true}')
+		} else {
+			g.write('}}')
+		}
 		if i < (node.vals.len - 1) {
 			g.write(', ')
 		}
