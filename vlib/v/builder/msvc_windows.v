@@ -162,7 +162,7 @@ fn find_vs_by_reg(vswhere_dir string, host_arch string, target_arch string) !VsI
 		// VSWhere is guaranteed to be installed at this location now
 		// If its not there then end user needs to update their visual studio
 		// installation!
-		res := os.execute('"${vswhere_dir}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
+		res := os.execute('"${vswhere_dir}\\Microsoft Visual Studio\\Installer\\vswhere.exe" -latest -products * -version "[16.0,17.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
 		// println('res: "$res"')
 		if res.exit_code != 0 {
 			return error_with_code(res.output, res.exit_code)
@@ -285,7 +285,7 @@ pub fn (mut v Builder) cc_msvc() {
 	}
 	if v.pref.is_staticlib {
 		a << '/O2'
-		a << '/MT'
+		a << '/MD'
 		a << '/DNDEBUG'
 		// /Zi generates a .pdb
 		// /Fd sets the pdb file name (so its not just vc140 all the time)
@@ -352,7 +352,7 @@ pub fn (mut v Builder) cc_msvc() {
 	// Not all of these are needed (but the compiler should discard them if they are not used)
 	// these are the defaults used by msbuild and visual studio
 	mut real_libs := ['kernel32.lib', 'user32.lib', 'advapi32.lib', 'ws2_32.lib']
-	sflags := msvc_string_flags(v.get_os_cflags())
+	sflags := v.msvc_string_flags(v.get_os_cflags())
 	real_libs << sflags.real_libs
 	inc_paths := sflags.inc_paths
 	lib_paths := sflags.lib_paths
@@ -382,8 +382,11 @@ pub fn (mut v Builder) cc_msvc() {
 	if v.pref.is_staticlib {
 		a << '/Fo${os.quoted_path(v.pref.out_name)}'
 	} else {
+		obj_path := v.pref.cache_manager.mod_postfix_with_key2cpath(v.table.modules.last(), '.obj', os.real_path(v.out_name_c + '.obj'))
+		a << '/Fo"${obj_path}"'
 		a << '/link'
 		a << '/OUT:${os.quoted_path(v.pref.out_name)}'
+		a << '/IMPLIB:"${v.pref.out_name[0..v.pref.out_name.len - 4]}.lib"'
 	}
 	a << r.library_paths()
 	if !all_cflags.contains('/DEBUG') {
@@ -448,8 +451,8 @@ pub fn (mut v Builder) cc_msvc() {
 		for flag in v.get_os_cflags() {
 			if flag.value.ends_with('.o') {
 				obj_path := os.real_path(flag.value.trim_right('.o')+'.obj')
-				// opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_path)
-				staticlib_cmd += " ${obj_path}"
+				opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_path)
+				staticlib_cmd += " ${opath}"
 			} else if flag.value.ends_with('.lib') {
 				lib_path := os.real_path(flag.value)
 				staticlib_cmd += " ${lib_path}"
@@ -480,6 +483,7 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 	path_without_o_postfix := path[..path.len - 2] // remove .o
 	mut obj_path := '${path_without_o_postfix}.obj'
 	obj_path = os.real_path(obj_path)
+	obj_path = v.pref.cache_manager.mod_postfix_with_key2cpath(_mod, '.obj', obj_path)
 	if os.exists(obj_path) {
 		// println('$obj_path already built.')
 		return
@@ -491,7 +495,7 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 	} else {
 		'${path_without_o_postfix}.cpp'
 	}
-	flags := msvc_string_flags(moduleflags)
+	flags := v.msvc_string_flags(moduleflags)
 	inc_dirs := flags.inc_paths.join(' ')
 	defines := flags.defines.join(' ')
 
@@ -506,7 +510,7 @@ fn (mut v Builder) build_thirdparty_obj_file_with_msvc(_mod string, path string,
 
 	if v.pref.is_staticlib {
 		oargs << '/O2'
-		oargs << '/MT'
+		oargs << '/MD'
 		oargs << '/DNDEBUG'
 		// /Zi generates a .pdb
 		// /Fd sets the pdb file name (so its not just vc140 all the time)
@@ -585,8 +589,8 @@ mut:
 	other_flags []string
 }
 
-// pub fn (cflags []CFlag) msvc_string_flags() MsvcStringFlags {
-pub fn msvc_string_flags(cflags []cflag.CFlag) MsvcStringFlags {
+// pub fn (mut v Builder) (cflags []CFlag) msvc_string_flags() MsvcStringFlags {
+pub fn (mut v Builder) msvc_string_flags(cflags []cflag.CFlag) MsvcStringFlags {
 	mut real_libs := []string{}
 	mut inc_paths := []string{}
 	mut lib_paths := []string{}
@@ -621,7 +625,9 @@ pub fn msvc_string_flags(cflags []cflag.CFlag) MsvcStringFlags {
 		} else if flag.value.ends_with('.o') {
 			// TODO: use flag.format() here as well; `#flag -L$when_first_existing(...)` is a more explicit way to achieve the same
 			// msvc expects .obj not .o
-			other_flags << '"${flag.value}bj"'
+			obj_real_path := os.real_path(flag.value.trim_right('.o')+'.obj')
+			obj_path := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_real_path)
+			other_flags << obj_path
 		} else if flag.value.starts_with('-D') {
 			defines << '/D${flag.value[2..]}'
 		} else {
