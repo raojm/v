@@ -130,7 +130,8 @@ fn normalise_mod(mod string) string {
 
 pub fn (mut cm CacheManager) mod_postfix_with_key2cpath(mod string, postfix string, key string) string {
 	prefix := cm.key2cpath(key)
-	res := '${prefix}.module.${normalise_mod(mod)}${postfix}'
+	file_name := key.all_after_last(os.path_separator).all_before('.')
+	res := '${prefix}.${file_name}.module.${normalise_mod(mod)}${postfix}'
 	return res
 }
 
