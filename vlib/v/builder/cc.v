@@ -870,7 +870,7 @@ pub fn (mut v Builder) cc() {
 	// }
 	// }
 	if v.pref.is_staticlib {
-		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_right('.o')+'.a'
+		staticlib_out := v.pref.out_name.all_before_last(os.path_separator) + os.path_separator + "lib" + v.pref.out_name.all_after_last(os.path_separator).trim_string_right('.o')+'.a'
 		mut libtool_cmd := 'libtool -static -o '
 		$if windows {
 			libtool_cmd = 'lib.exe /nologo /out:'

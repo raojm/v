@@ -382,8 +382,8 @@ pub fn (mut v Builder) cc_msvc() {
 	if v.pref.is_staticlib {
 		a << '/Fo${os.quoted_path(v.pref.out_name)}'
 	} else {
-		obj_path := v.pref.cache_manager.mod_postfix_with_key2cpath(v.table.modules.last(), '.obj', os.real_path(v.out_name_c + '.obj'))
-		a << '/Fo"${obj_path}"'
+		// obj_path := v.pref.cache_manager.mod_postfix_with_key2cpath(v.table.modules.last(), '.obj', os.real_path(v.out_name_c + '.obj'))
+		// a << '/Fo"${obj_path}"'
 		a << '/link'
 		a << '/OUT:${os.quoted_path(v.pref.out_name)}'
 		a << '/IMPLIB:"${v.pref.out_name[0..v.pref.out_name.len - 4]}.lib"'
@@ -450,7 +450,7 @@ pub fn (mut v Builder) cc_msvc() {
 
 		for flag in v.get_os_cflags() {
 			if flag.value.ends_with('.o') {
-				obj_path := os.real_path(flag.value.trim_right('.o')+'.obj')
+				obj_path := os.real_path(flag.value.trim_string_right('.o')+'.obj')
 				opath := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_path)
 				staticlib_cmd += " ${opath}"
 			} else if flag.value.ends_with('.lib') {
@@ -625,7 +625,7 @@ pub fn (mut v Builder) msvc_string_flags(cflags []cflag.CFlag) MsvcStringFlags {
 		} else if flag.value.ends_with('.o') {
 			// TODO: use flag.format() here as well; `#flag -L$when_first_existing(...)` is a more explicit way to achieve the same
 			// msvc expects .obj not .o
-			obj_real_path := os.real_path(flag.value.trim_right('.o')+'.obj')
+			obj_real_path := os.real_path(flag.value.trim_string_right('.o')+'.obj')
 			obj_path := v.pref.cache_manager.mod_postfix_with_key2cpath(flag.mod, '.obj', obj_real_path)
 			other_flags << obj_path
 		} else if flag.value.starts_with('-D') {
